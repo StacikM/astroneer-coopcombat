@@ -57,6 +57,14 @@
     <div id="players"><div class="empty">Waiting for the game…</div></div>
   </section>
   <section>
+    <h2>World</h2>
+    <div class="row">
+      <button id="barrieroff">Remove planet barriers</button>
+      <button id="barrieron">Restore barriers</button>
+    </div>
+    <p class="empty" style="font-size:13px;margin-bottom:0">Opens up the invisible walls at the top of the planet and around the core, for everyone who has the mod. Experimental: the console log lists the values the game used.</p>
+  </section>
+  <section>
     <h2>Chat</h2>
     <div id="chatlog" class="empty" style="min-height:60px;white-space:pre-wrap">No messages yet.</div>
     <div class="row" style="margin-top:10px">
@@ -187,6 +195,8 @@ function syncGun(strings) {
   if (document.activeElement !== $("gunitem") && strings.GUN_ITEM) $("gunitem").value = strings.GUN_ITEM;
   if (document.activeElement !== $("gunkey") && strings.GUN_KEY) $("gunkey").value = strings.GUN_KEY;
 }
+$("barrieroff").onclick = () => send({ cmd: "barrier", value: "off" });
+$("barrieron").onclick = () => send({ cmd: "barrier", value: "on" });
 function sendChat() {
   const i = $("chatinput"); const text = i.value.trim();
   if (!text) return;

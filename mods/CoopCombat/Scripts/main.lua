@@ -725,8 +725,16 @@ local function runChatCommand(pc, text)
         giveGun(pawn)
         replyTo(pc, "[Server] a " .. GUN_ITEM .. " is next to you. Pick it up, hold it, and use the fire button.")
         pcall(feed, charName(pawn) .. " got a gun")
+    elseif cmd == "nobarrier" then
+        sendEvt("BARRIER|0")
+        pcall(feed, "world barriers removed")
+        replyTo(pc, "[Server] barriers removed for everyone. /barrier puts them back.")
+    elseif cmd == "barrier" then
+        sendEvt("BARRIER|1")
+        pcall(feed, "world barriers restored")
+        replyTo(pc, "[Server] barriers restored.")
     else
-        replyTo(pc, "[Server] unknown command. Try /givemegun")
+        replyTo(pc, "[Server] unknown command. Try /givemegun, /nobarrier or /barrier")
     end
 end
 
@@ -780,9 +788,64 @@ function feed(text)
     sendEvt("FEED|" .. text)
 end
 
+-- World barriers. The camera rig has "hard" and "soft" distance bounds (an inner and an outer distance from the
+-- planet centre, with a correction speed that pushes you back), and DeformSafeZone components block digging inside
+-- a radius. "Off" opens them all up, "on" puts the game's own values back. Each machine changes its own game, so
+-- this is triggered by a network event. The original values are logged so we can see what the game uses.
+local barrierSaved = {} -- address -> original values
+local function applyBarriers(off)
+    crumb("applyBarriers")
+    local changed = 0
+    local function each(className, fn)
+        local list = FindAllOf(className)
+        if type(list) ~= "table" then return end
+        for i = 1, #list do
+            local c = list[i]
+            local ok, err = pcall(function()
+                if c:IsValid() and not c:GetFullName():find("Default__", 1, true) then fn(c) end
+            end)
+            if not ok then say("barrier: skipped one %s (%s)", className, tostring(err)) end
+        end
+    end
+    each("DistanceBoundsModifierComponent", function(c)
+        local key = c:GetAddress()
+        if off then
+            if not barrierSaved[key] then
+                barrierSaved[key] = { c.InnerBound, c.OuterBound, c.CorrectionSpeed }
+                say("barrier: %s inner=%.0f outer=%.0f speed=%.2f", c:GetFullName(), c.InnerBound, c.OuterBound, c.CorrectionSpeed)
+            end
+            c.InnerBound = 0
+            c.OuterBound = 1e9
+            c.CorrectionSpeed = 0
+        elseif barrierSaved[key] then
+            c.InnerBound, c.OuterBound, c.CorrectionSpeed = barrierSaved[key][1], barrierSaved[key][2], barrierSaved[key][3]
+            barrierSaved[key] = nil
+        end
+        changed = changed + 1
+    end)
+    each("DeformSafeZoneComponent", function(c)
+        local key = "z" .. c:GetAddress()
+        if off then
+            if not barrierSaved[key] then
+                barrierSaved[key] = { c.Radius }
+                say("barrier: %s dig-safe-zone radius=%.0f", c:GetFullName(), c.Radius)
+            end
+            c.Radius = 0
+        elseif barrierSaved[key] then
+            c.Radius = barrierSaved[key][1]
+            barrierSaved[key] = nil
+        end
+        changed = changed + 1
+    end)
+    say("barriers %s (%d components changed)", off and "removed" or "restored", changed)
+end
+
 local function handleEvt(text)
     local kind, rest = text:match("^(%u+)|(.*)$")
-    if kind == "FEED" then
+    if kind == "BARRIER" then
+        local ok, err = pcall(applyBarriers, rest == "0")
+        if not ok then say("barrier error: %s", tostring(err)) end
+    elseif kind == "FEED" then
         addChatLine("[Feed] " .. rest)
     elseif kind == "DOWN" then
         local name, secs = rest:match("^(.-)|([%d%.]+)$")
@@ -1127,6 +1190,11 @@ local function runCommand(line)
     end
     local cmd, a, b = line:match("^(%a+)%s+(%S+)%s*(%S*)")
     if not cmd then return end
+    if cmd == "barrier" then
+        sendEvt("BARRIER|" .. ((a == "off") and "0" or "1"))
+        pcall(feed, (a == "off") and "world barriers removed" or "world barriers restored")
+        return
+    end
     if cmd == "setstr" then
         if a == "GUN_ITEM" and GUN_PROPS[b] then GUN_ITEM = b say("panel: GUN_ITEM = %s", b)
         elseif a == "GUN_KEY" and GUN_KEYS[b] then GUN_KEY = b say("panel: GUN_KEY = %s", b) end

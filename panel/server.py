@@ -37,6 +37,8 @@ def build_command(body):
             if text:
                 return "say " + text
         return None
+    if cmd == "barrier":
+        return "barrier off" if body.get("value") == "off" else "barrier on" if body.get("value") == "on" else None
     if cmd == "setstr":
         name, value = body.get("name"), body.get("value")
         if name in STR_SETTINGS and value in STR_SETTINGS[name]:
