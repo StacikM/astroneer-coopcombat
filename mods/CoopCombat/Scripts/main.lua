@@ -108,6 +108,7 @@ local function charName(astro)
 end
 
 local feed, sendEvt -- kill feed / network events, defined with the chat code below
+local allowDamage -- creative-mode PvP switch, defined below
 
 local hudWasOn, hudErrShown = false, false
 
@@ -295,6 +296,7 @@ local function goDown(astro, by)
             if not a then downed[key] = nil return end
             say("bled out")
             downed[key] = nil
+            allowDamage(a)
             pcall(function() a:AuthoritySetIsImmuneToDamage(false, a) end)
             finalDeath[key] = true
             local ok3, err3 = pcall(function() a:AuthorityForceKillAstro() end)
@@ -325,8 +327,44 @@ function revive(astro, by)
     pcall(feed, by and (by .. " revived " .. who) or (who .. " was revived"))
 end
 
+-- Creative mode protects players from damage. PvP should still work there, so before we hurt/kill/blow up
+-- a player we switch their invincibility off for a few seconds, then put creative's protection back.
+local PVP_IN_CREATIVE = 1
+local pvpSaved = {} -- address -> { inv, imm, token }
+function allowDamage(astro)
+    if PVP_IN_CREATIVE == 0 or not creativeOn() then return end
+    crumb("allowDamage")
+    local key = astro:GetAddress()
+    local rec = pvpSaved[key]
+    if not rec then
+        rec = { token = 0 }
+        local ok1, inv = pcall(function() return astro.bInvincible end)
+        local ok2, imm = pcall(function() return astro.bIsImmuneToDamage end)
+        if ok1 then rec.inv = inv end
+        if ok2 then rec.imm = imm end
+        pvpSaved[key] = rec
+    end
+    rec.token = rec.token + 1
+    local token = rec.token
+    pcall(function() astro.bInvincible = false end)
+    pcall(function() astro.bIsImmuneToDamage = false end)
+    ExecuteWithDelay(4000, function()
+        ExecuteInGameThread(function()
+            local cur = pvpSaved[key]
+            if not cur or cur.token ~= token then return end
+            pvpSaved[key] = nil
+            local a = findByAddress(key)
+            if a and creativeOn() then
+                if cur.inv ~= nil then pcall(function() a.bInvincible = cur.inv end) end
+                if cur.imm ~= nil then pcall(function() a.bIsImmuneToDamage = cur.imm end) end
+            end
+        end)
+    end)
+end
+
 local function killPlayer(astro, by)
     crumb("killPlayer")
+    allowDamage(astro)
     local key = astro:GetAddress()
     local who = charName(astro)
     local safe = who:gsub("|", "/")
@@ -340,6 +378,7 @@ local function killPlayer(astro, by)
 end
 
 local function hurt(astro, amount, by)
+    allowDamage(astro)
     local before = astro.Health
     local after = before - amount
     if downed[astro:GetAddress()] then
@@ -440,6 +479,7 @@ end)
 -- Explode: spawn EXPLODE_COUNT dynamite on the player and detonate them, in small batches to avoid a hitch.
 local function explodePlayer(astro, by)
     crumb("explodePlayer")
+    allowDamage(astro)
     pcall(feed, charName(astro) .. " was blown up" .. (by and (" by " .. by) or ""))
     local key = astro:GetAddress()
     downed[key] = nil
@@ -983,8 +1023,8 @@ local function writeState()
     for _, a in ipairs(others) do
         if alive(a) then n = n + 1 table.insert(list, playerJson(a, false, n)) end
     end
-    local cfg = string.format('{"DAMAGE":%.3f,"SNIPE_DAMAGE":%.3f,"GUN_DAMAGE":%.3f,"GUN_COOLDOWN":%.2f,"HIT_RADIUS":%.0f,"BLEEDOUT_SECONDS":%.1f,"CRAWL_SPEED_SCALE":%.3f,"DOWNED_HEALTH":%.3f,"REVIVE_RANGE":%.0f,"REVIVE_SECONDS":%.1f,"EXPLODE_COUNT":%d}',
-        DAMAGE, SNIPE_DAMAGE, GUN_DAMAGE, GUN_COOLDOWN, HIT_RADIUS, BLEEDOUT_SECONDS, CRAWL_SPEED_SCALE, DOWNED_HEALTH, REVIVE_RANGE, REVIVE_SECONDS, EXPLODE_COUNT)
+    local cfg = string.format('{"DAMAGE":%.3f,"SNIPE_DAMAGE":%.3f,"GUN_DAMAGE":%.3f,"GUN_COOLDOWN":%.2f,"HIT_RADIUS":%.0f,"BLEEDOUT_SECONDS":%.1f,"CRAWL_SPEED_SCALE":%.3f,"DOWNED_HEALTH":%.3f,"REVIVE_RANGE":%.0f,"REVIVE_SECONDS":%.1f,"EXPLODE_COUNT":%d,"PVP_IN_CREATIVE":%d}',
+        DAMAGE, SNIPE_DAMAGE, GUN_DAMAGE, GUN_COOLDOWN, HIT_RADIUS, BLEEDOUT_SECONDS, CRAWL_SPEED_SCALE, DOWNED_HEALTH, REVIVE_RANGE, REVIVE_SECONDS, EXPLODE_COUNT, PVP_IN_CREATIVE)
     local f = io.open(panelDir .. "state.json", "w")
     if not f then return end
     local chatJson = {}
@@ -1012,6 +1052,7 @@ local settable = {
     CRAWL_SPEED_SCALE = { 0.02, 1, function(v) CRAWL_SPEED_SCALE = v end },
     DOWNED_HEALTH = { 0.05, 1, function(v) DOWNED_HEALTH = v end },
     EXPLODE_COUNT = { 1, 100, function(v) EXPLODE_COUNT = math.floor(v) end },
+    PVP_IN_CREATIVE = { 0, 1, function(v) PVP_IN_CREATIVE = (v >= 0.5) and 1 or 0 end },
     REVIVE_RANGE = { 100, 3000, function(v) REVIVE_RANGE = v end },
     REVIVE_SECONDS = { 1, 30, function(v) REVIVE_SECONDS = v end },
 }

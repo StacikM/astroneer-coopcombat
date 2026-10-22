@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 PLAYER_COMMANDS = {"hurt", "heal", "down", "revive", "kill", "explode", "give"}
 SETTINGS = {
-    "DAMAGE", "SNIPE_DAMAGE", "GUN_DAMAGE", "GUN_COOLDOWN", "HIT_RADIUS", "BLEEDOUT_SECONDS", "CRAWL_SPEED_SCALE",
+    "DAMAGE", "SNIPE_DAMAGE", "GUN_DAMAGE", "GUN_COOLDOWN", "HIT_RADIUS", "PVP_IN_CREATIVE", "BLEEDOUT_SECONDS", "CRAWL_SPEED_SCALE",
     "DOWNED_HEALTH", "REVIVE_RANGE", "REVIVE_SECONDS", "EXPLODE_COUNT",
 }
 ID_RE = re.compile(r"^\d{1,20}$")
