@@ -753,6 +753,7 @@ local function sendChat(text)
         broadcastChat(playerNameOf(pc) .. ": " .. text, pc.PlayerState)
     else
         local ok, err = pcall(function() pc:ServerExec("CCHAT " .. text) end)
+        say("chat: sent to the host (%d chars, ok=%s)", #text, tostring(ok))
         if not ok then say("chat send error: %s", tostring(err)) end
     end
 end
@@ -922,9 +923,17 @@ local function getInputBox(hud)
     return box
 end
 
+-- shows what has been typed so far in the chat box (the box is read-only, the mod collects the key presses itself)
+local function renderBuffer()
+    local hud = FindFirstOf("PlayWidgetInstance_C")
+    if not alive(hud) then return end
+    getInputBox(hud):SetText(FText((chat.buffer or "") .. "|"))
+end
+
 local function closeChat()
     crumb("closeChat")
     chat.open = false
+    chat.buffer = ""
     local pc = getLocalController()
     local hud = FindFirstOf("PlayWidgetInstance_C")
     if alive(hud) then
@@ -953,7 +962,9 @@ local function openChat()
     if not pc then say("chat: Enter pressed but there is no local controller") return end
     if not alive(hud) then say("chat: Enter pressed but the HUD isn't ready") return end
     local box = getInputBox(hud)
-    box:SetText(FText(""))
+    chat.buffer = ""
+    pcall(function() box:SetIsReadOnly(true) end)
+    box:SetText(FText("|"))
     box:SetVisibility(0)
     local ok, prev = pcall(function() return pc.bShowMouseCursor end)
     if ok then chat.prevCursor = (prev == true) or (type(prev) == "number" and prev ~= 0) end
@@ -968,12 +979,8 @@ end
 
 local function submitChat()
     crumb("submitChat")
-    local hud = FindFirstOf("PlayWidgetInstance_C")
-    local text = ""
-    if alive(hud) then
-        local ok, t = pcall(function() return getInputBox(hud):GetText():ToString() end)
-        if ok and type(t) == "string" then text = t end
-    end
+    local text = chat.buffer or ""
+    say("chat: submitting %d characters", #text)
     closeChat()
     sendChat(text)
 end
@@ -1071,6 +1078,61 @@ RegisterKeyBind(Key.ESCAPE, function()
         if chat.open then pcall(closeChat) end
     end)
 end)
+
+-- Typing. The text box never received the keystrokes in Astroneer, so while the chat is open the mod collects them
+-- itself. The game's own controls are off in that mode, and the key binds only watch, they don't steal the key.
+local TYPE_KEYS = {} -- key name -> { normal character, shifted character }
+for i = 0, 25 do
+    local lower = string.char(97 + i)
+    TYPE_KEYS[string.char(65 + i)] = { lower, lower:upper() }
+end
+local DIGIT_NAMES = { "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE" }
+local DIGIT_SHIFT = { ")", "!", "@", "#", "$", "%", "^", "&", "*", "(" }
+for i = 1, 10 do TYPE_KEYS[DIGIT_NAMES[i]] = { tostring(i - 1), DIGIT_SHIFT[i] } end
+TYPE_KEYS.SPACE = { " ", " " }
+TYPE_KEYS.COMMA = { ",", "<" }
+TYPE_KEYS.PERIOD = { ".", ">" }
+TYPE_KEYS.SLASH = { "/", "?" }
+TYPE_KEYS.HYPHEN = { "-", "_" }
+TYPE_KEYS.EQUALS = { "=", "+" }
+TYPE_KEYS.SEMICOLON = { ";", ":" }
+TYPE_KEYS.QUOTE = { "'", '"' }
+
+local function shiftDown()
+    if IsKeyBindDown == nil then return false end
+    local ok, v = pcall(function() return IsKeyBindDown(Key.LEFT_SHIFT) or IsKeyBindDown(Key.RIGHT_SHIFT) end)
+    return ok and v == true
+end
+
+local function typingKeyPressed(name)
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function()
+            if not chat.open then return end
+            if name == "BACKSPACE" then
+                chat.buffer = (chat.buffer or ""):sub(1, -2)
+            else
+                local entry = TYPE_KEYS[name]
+                if not entry or #(chat.buffer or "") >= 200 then return end
+                chat.buffer = (chat.buffer or "") .. (shiftDown() and entry[2] or entry[1])
+            end
+            renderBuffer()
+        end)
+        if not ok then say("typing error: %s", tostring(err)) end
+    end)
+end
+
+local boundKeys = 0
+for name in pairs(TYPE_KEYS) do
+    local keyEnum = Key[name]
+    if keyEnum ~= nil then
+        pcall(function() RegisterKeyBind(keyEnum, function() typingKeyPressed(name) end) end)
+        boundKeys = boundKeys + 1
+    end
+end
+if Key.BACKSPACE ~= nil then
+    pcall(function() RegisterKeyBind(Key.BACKSPACE, function() typingKeyPressed("BACKSPACE") end) end)
+end
+say("chat typing: %d keys bound, shift detection %s", boundKeys, IsKeyBindDown ~= nil and "available" or "not available (lowercase only)")
 
 -- F9 is the only hotkey: the sniper (fires along your crosshair, any range)
 RegisterKeyBind(Key.F9, function()
