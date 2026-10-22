@@ -738,9 +738,77 @@ local function runChatCommand(pc, text)
     end
 end
 
+-- /probe: measures where you are compared to the planet and what you overlap, to find the real invisible walls.
+-- It only reads values and shows them in your own chat log and in the UE4SS log. Runs on your own PC, nothing is sent.
+local function probe()
+    crumb("probe")
+    local pc = getLocalController()
+    local me = pc and pawnOf(pc)
+    if not me then addChatLine("[Probe] no character found") return end
+    local loc = me:K2_GetActorLocation()
+    say("probe: player at %.0f, %.0f, %.0f", loc.X, loc.Y, loc.Z)
+    local planets = FindAllOf("AstroPlanet")
+    if type(planets) == "table" then
+        for i = 1, #planets do
+            pcall(function()
+                local p = planets[i]
+                if not p:IsValid() or p:GetFullName():find("Default__", 1, true) then return end
+                local c = p:GetCenter()
+                local r = p:GetRadius()
+                local d = math.sqrt((loc.X - c.X) ^ 2 + (loc.Y - c.Y) ^ 2 + (loc.Z - c.Z) ^ 2)
+                say("probe: planet %s radius %.0f gravityRadius %.0f worldSize %.0f, you are %.0f from its center (%.2f x radius)",
+                    p:GetFullName(), r, p.GravityRadius, p.WorldSize, d, d / math.max(r, 1))
+                addChatLine(string.format("[Probe] %.2f x planet radius (%.0f of %.0f)", d / math.max(r, 1), d, r))
+            end)
+        end
+    end
+    pcall(function()
+        local mv = me.AstroMovementComponent
+        say("probe: movement mode %s, speed %.0f, gravity %.0f", tostring(mv.CurrentMovementMode), mv.MaxSpeed, mv.Gravity)
+    end)
+    local actors = {}
+    local ok = pcall(function() me:GetOverlappingActors(actors) end)
+    local names = {}
+    for i = 1, #actors do
+        pcall(function() table.insert(names, actors[i]:GetFullName()) end)
+    end
+    say("probe: overlapping actors (%s): %d %s", tostring(ok), #names, table.concat(names, " | "))
+    local comps = {}
+    local ok2 = pcall(function() me.CapsuleComponent:GetOverlappingComponents(comps) end)
+    local cnames = {}
+    for i = 1, #comps do
+        pcall(function() table.insert(cnames, comps[i]:GetFullName()) end)
+    end
+    say("probe: overlapping components (%s): %d %s", tostring(ok2), #cnames, table.concat(cnames, " | "))
+    addChatLine("[Probe] details written to UE4SS.log")
+end
+
+-- /hardness: the creative-mode switch that lets the terrain tool dig through hard ground (maybe the core)
+local function ignoreHardness()
+    crumb("ignoreHardness")
+    local list = FindAllOf("DeformTool")
+    local n = 0
+    if type(list) == "table" then
+        for i = 1, #list do
+            pcall(function()
+                local t = list[i]
+                if t:IsValid() and not t:GetFullName():find("Default__", 1, true) then
+                    t:ServerSetIsIgnoringTerrainHardnessCreative(true)
+                    n = n + 1
+                end
+            end)
+        end
+    end
+    say("hardness: asked %d terrain tools to ignore terrain hardness", n)
+    addChatLine(string.format("[Hardness] %d terrain tool(s) set to ignore hardness (creative mode only)", n))
+end
+
 local function sendChat(text)
     text = cleanChat(text)
     if text == "" then return end
+    local lowered = text:lower()
+    if lowered == "/probe" then pcall(probe) return end
+    if lowered == "/hardness" then pcall(ignoreHardness) return end
     if os.clock() - chat.lastSent < 0.5 then return end
     chat.lastSent = os.clock()
     local pc = getLocalController()
