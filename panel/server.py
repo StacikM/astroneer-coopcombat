@@ -26,6 +26,13 @@ ID_RE = re.compile(r"^\d{1,20}$")
 
 def build_command(body):
     cmd = body.get("cmd")
+    if cmd == "say":
+        text = body.get("text")
+        if isinstance(text, str):
+            text = "".join(c if c.isprintable() else " " for c in text)[:200].strip()
+            if text:
+                return "say " + text
+        return None
     if cmd == "set":
         name, value = body.get("name"), body.get("value")
         if name in SETTINGS and isinstance(value, (int, float)) and not isinstance(value, bool):

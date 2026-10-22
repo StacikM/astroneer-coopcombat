@@ -106,7 +106,7 @@ local hudWasOn, hudErrShown = false, false
 -- HUD text is looked up by path every time instead of being kept in a variable: the HUD is rebuilt when you
 -- respawn and the game frees the old widgets later, so a stored reference becomes a dangling pointer
 -- (that crashed UE4SS about 20 seconds after every death).
-local function getText(hud, name, size, y, color)
+local function getText(hud, name, size, y, color, x, ax)
     local tree = hud.WidgetTree
     local full = tree:GetFullName():match("^%S+%s+(.+)$")
     if full then
@@ -120,8 +120,8 @@ local function getText(hud, name, size, y, color)
     tb:SetShadowOffset({ X = 3, Y = 3 })
     tb:SetShadowColorAndOpacity({ R = 0, G = 0, B = 0, A = 1 })
     local slot = tree.RootWidget:AddChild(tb)
-    slot:SetAnchors({ Minimum = { X = 0.5, Y = y }, Maximum = { X = 0.5, Y = y } })
-    slot:SetAlignment({ X = 0.5, Y = 0.5 })
+    slot:SetAnchors({ Minimum = { X = x or 0.5, Y = y }, Maximum = { X = x or 0.5, Y = y } })
+    slot:SetAlignment({ X = ax or 0.5, Y = 0.5 })
     slot:SetPosition({ X = 0, Y = 0 })
     slot:SetAutoSize(true)
     slot:SetZOrder(100)
@@ -181,6 +181,7 @@ local function setHud(on, secondsLeft)
 end
 
 local revive -- defined below, used by the walk-up revive
+local chatTick -- defined below, called from hudTick
 
 local function alive(o)
     local ok, v = pcall(function() return o ~= nil and o:IsValid() end)
@@ -252,6 +253,7 @@ local function hudTick()
     elseif hudWasOn then
         if setHud(false) then hudWasOn = false end
     end
+    pcall(chatTick)
 end
 
 LoopAsync(100, function()
@@ -503,6 +505,215 @@ RegisterKeyBind(Key.F9, function()
     end)
 end)
 
+-- ===== Chat =====
+-- Uses the game's own network channels, no outside service:
+--   client -> host : the engine RPC PlayerController:ServerExec carrying "CCHAT <text>". It does nothing in a shipping
+--                    build, we only read it in a hook on the host.
+--   host -> everyone: PlayerController:ClientTeamMessage with message type "CoopChat"; every copy of the mod listens.
+-- Press Enter to open the chat box, Enter again to send, Escape to cancel.
+local CHAT_TYPE = "CoopChat"
+local CHAT_MAX_LINES = 8
+local CHAT_FADE_SECONDS = 12
+local chat = { open = false, lines = {}, lastShown = 0, lastSent = 0, shownText = nil, shownHud = nil }
+
+local function cleanChat(t)
+    local x = tostring(t or ""):gsub("%c", " ")
+    x = x:gsub("^%s+", "")
+    x = x:gsub("%s+$", "")
+    if #x > 200 then x = x:sub(1, 200) end
+    return x
+end
+
+local function addChatLine(line)
+    table.insert(chat.lines, line)
+    while #chat.lines > CHAT_MAX_LINES do table.remove(chat.lines, 1) end
+    chat.lastShown = os.clock()
+    say("chat: %s", line)
+end
+
+local function playerNameOf(pc)
+    local ok, name = pcall(function() return pc.PlayerState:GetPlayerName():ToString() end)
+    if ok and type(name) == "string" and name ~= "" then return name end
+    return "Player"
+end
+
+-- host only: push one line to every player's screen
+local function broadcastChat(line, senderPS)
+    crumb("broadcastChat")
+    local list = FindAllOf("PlayController")
+    if type(list) ~= "table" then return end
+    for i = 1, #list do
+        local pc = list[i]
+        local ok, err = pcall(function()
+            if pc:IsValid() then pc:ClientTeamMessage(senderPS, line, FName(CHAT_TYPE), 8.0) end
+        end)
+        if not ok then say("chat broadcast error: %s", tostring(err)) end
+    end
+end
+
+local function isHost(pc)
+    local ok, v = pcall(function() return pc:HasAuthority() end)
+    return ok and v == true
+end
+
+local function sendChat(text)
+    text = cleanChat(text)
+    if text == "" then return end
+    if os.clock() - chat.lastSent < 0.5 then return end
+    chat.lastSent = os.clock()
+    local pc = getLocalController()
+    if not pc then say("chat: no local controller") return end
+    if isHost(pc) then
+        broadcastChat(playerNameOf(pc) .. ": " .. text, pc.PlayerState)
+    else
+        local ok, err = pcall(function() pc:ServerExec("CCHAT " .. text) end)
+        if not ok then say("chat send error: %s", tostring(err)) end
+    end
+end
+
+local function adminSay(text)
+    text = cleanChat(text)
+    if text == "" then return end
+    local pc = getLocalController()
+    if not pc then return end
+    if isHost(pc) then broadcastChat("[Admin] " .. text, pc.PlayerState)
+    else say("admin say: only the host can broadcast") end
+end
+
+-- receive: every machine shows lines that arrive with our message type
+pcall(function()
+    RegisterHook("/Script/Engine.PlayerController:ClientTeamMessage", function(self, senderPS, s, mtype, life)
+        local ok, err = pcall(function()
+            if mtype:get():ToString() == CHAT_TYPE then addChatLine(s:get():ToString()) end
+        end)
+        if not ok then say("chat receive error: %s", tostring(err)) end
+    end)
+end)
+
+-- host: a client's ServerExec arrives here
+pcall(function()
+    RegisterHook("/Script/Engine.PlayerController:ServerExec", function(self, msg)
+        local ok, err = pcall(function()
+            local pc = self:get()
+            if not isHost(pc) then return end
+            local body = msg:get():ToString():match("^CCHAT (.*)$")
+            if not body then return end
+            body = cleanChat(body)
+            if body == "" then return end
+            broadcastChat(playerNameOf(pc) .. ": " .. body, pc.PlayerState)
+        end)
+        if not ok then say("chat host error: %s", tostring(err)) end
+    end)
+end)
+
+local function getInputBox(hud)
+    local tree = hud.WidgetTree
+    local full = tree:GetFullName():match("^%S+%s+(.+)$")
+    if full then
+        local found = StaticFindObject(full .. ".CoopChatInput")
+        if found ~= nil and found:IsValid() then return found end
+    end
+    local box = StaticConstructObject(StaticFindObject("/Script/UMG.EditableTextBox"), tree, FName("CoopChatInput"))
+    box:SetHintText(FText("Type a message, Enter to send"))
+    local slot = tree.RootWidget:AddChild(box)
+    slot:SetAnchors({ Minimum = { X = 0.02, Y = 0.8 }, Maximum = { X = 0.02, Y = 0.8 } })
+    slot:SetAlignment({ X = 0, Y = 0.5 })
+    slot:SetPosition({ X = 0, Y = 0 })
+    slot:SetAutoSize(false)
+    slot:SetSize({ X = 700, Y = 44 })
+    slot:SetZOrder(110)
+    return box
+end
+
+local function closeChat()
+    crumb("closeChat")
+    chat.open = false
+    local pc = getLocalController()
+    local hud = FindFirstOf("PlayWidgetInstance_C")
+    if alive(hud) then
+        pcall(function()
+            local box = getInputBox(hud)
+            box:SetText(FText(""))
+            box:SetVisibility(1)
+        end)
+    end
+    if pc then
+        pcall(function()
+            local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+            lib:SetInputMode_GameOnly(pc)
+            pc.bShowMouseCursor = false
+        end)
+    end
+end
+
+local function openChat()
+    crumb("openChat")
+    local pc = getLocalController()
+    local hud = FindFirstOf("PlayWidgetInstance_C")
+    if not pc or not alive(hud) then return end
+    -- a visible mouse cursor means a menu is open: Enter there must not open the chat
+    local cursor = pc.bShowMouseCursor
+    if cursor == true or (type(cursor) == "number" and cursor ~= 0) then return end
+    local box = getInputBox(hud)
+    box:SetText(FText(""))
+    box:SetVisibility(0)
+    local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+    lib:SetInputMode_UIOnlyEx(pc, box, 0)
+    pc.bShowMouseCursor = true
+    box:SetKeyboardFocus()
+    chat.open = true
+    chat.lastShown = os.clock()
+end
+
+local function submitChat()
+    crumb("submitChat")
+    local hud = FindFirstOf("PlayWidgetInstance_C")
+    local text = ""
+    if alive(hud) then
+        local ok, t = pcall(function() return getInputBox(hud):GetText():ToString() end)
+        if ok and type(t) == "string" then text = t end
+    end
+    closeChat()
+    sendChat(text)
+end
+
+-- the on-screen log (bottom left): shows for a while after a message, or while the box is open
+function chatTick()
+    local hud = FindFirstOf("PlayWidgetInstance_C")
+    if not alive(hud) then return end
+    if chat.open and not getLocalController() then chat.open = false end
+    local visible = #chat.lines > 0 and (chat.open or os.clock() - chat.lastShown < CHAT_FADE_SECONDS)
+    local text = visible and table.concat(chat.lines, "\n") or ""
+    local hudAddr = hud:GetAddress()
+    if text == chat.shownText and hudAddr == chat.shownHud then return end
+    chat.shownText, chat.shownHud = text, hudAddr
+    crumb("chatTick")
+    local ok, err = pcall(function()
+        local t = getText(hud, "CoopChatLog", 28, 0.62, { R = 1.0, G = 1.0, B = 1.0, A = 1.0 }, 0.02, 0)
+        t:SetText(FText(text))
+        t:SetVisibility(text ~= "" and 4 or 1)
+    end)
+    if not ok then say("chat log error: %s", tostring(err)) end
+end
+
+RegisterKeyBind(Key.RETURN, function()
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function()
+            if chat.open then submitChat() else openChat() end
+        end)
+        if not ok then
+            say("chat key error: %s", tostring(err))
+            pcall(closeChat)
+        end
+    end)
+end)
+
+RegisterKeyBind(Key.ESCAPE, function()
+    ExecuteInGameThread(function()
+        if chat.open then pcall(closeChat) end
+    end)
+end)
+
 -- Admin panel bridge: writes panel/state.json once a second, executes lines from panel/commands.txt.
 -- The local web panel (panel/server.py) is the other end. Nothing here listens on the network.
 local panelDir = (debug.getinfo(1, "S").source:gsub("^@", ""):gsub("[Ss]cripts[\\/]main%.lua$", "")) .. "panel\\"
@@ -537,7 +748,9 @@ local function writeState()
         DAMAGE, SNIPE_DAMAGE, HIT_RADIUS, BLEEDOUT_SECONDS, CRAWL_SPEED_SCALE, DOWNED_HEALTH, REVIVE_RANGE, REVIVE_SECONDS, EXPLODE_COUNT)
     local f = io.open(panelDir .. "state.json", "w")
     if not f then return end
-    f:write(string.format('{"time":%d,"creative":%s,"players":[%s],"config":%s}', os.time(), tostring(creativeOn()), table.concat(list, ","), cfg))
+    local chatJson = {}
+    for _, l in ipairs(chat.lines) do table.insert(chatJson, jstr(l)) end
+    f:write(string.format('{"time":%d,"creative":%s,"players":[%s],"config":%s,"chat":[%s]}', os.time(), tostring(creativeOn()), table.concat(list, ","), cfg, table.concat(chatJson, ",")))
     f:close()
 end
 
@@ -564,6 +777,10 @@ local settable = {
 
 local function runCommand(line)
     crumb("command " .. line)
+    if line:sub(1, 4) == "say " then
+        adminSay(line:sub(5))
+        return
+    end
     local cmd, a, b = line:match("^(%a+)%s+(%S+)%s*(%S*)")
     if not cmd then return end
     if cmd == "set" then
@@ -609,4 +826,4 @@ LoopAsync(400, function()
     return false
 end)
 
-print("[CoopCombat] loaded: controlled from the admin panel\n")
+print("[CoopCombat] loaded: controlled from the admin panel; Enter opens the chat\n")

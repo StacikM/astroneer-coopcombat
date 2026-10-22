@@ -57,6 +57,14 @@
     <div id="players"><div class="empty">Waiting for the game…</div></div>
   </section>
   <section>
+    <h2>Chat</h2>
+    <div id="chatlog" class="empty" style="min-height:60px;white-space:pre-wrap">No messages yet.</div>
+    <div class="row" style="margin-top:10px">
+      <input id="chatinput" type="text" maxlength="200" placeholder="Message everyone as [Admin] (host only)" style="flex:1;min-width:0;padding:8px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);font:inherit">
+      <button id="chatsend">Send</button>
+    </div>
+  </section>
+  <section>
     <h2>Settings</h2>
     <div id="settings"></div>
     <p class="empty" style="font-size:13px">Changes apply instantly and reset when the game restarts.</p>
@@ -150,12 +158,20 @@ async function poll() {
     pill.className = "pill " + (st.connected ? "on" : "off");
     pill.textContent = st.connected ? "mod connected" : "mod not connected";
     $("creative").hidden = !(st.connected && st.creative);
+    $("chatlog").textContent = (st.chat && st.chat.length) ? st.chat.join("\n") : "No messages yet.";
     renderPlayers(st.players || [], st.connected);
     syncSettings(st.config || {});
   } catch (e) {
     $("status").className = "pill off"; $("status").textContent = "panel server down";
   }
 }
+function sendChat() {
+  const i = $("chatinput"); const text = i.value.trim();
+  if (!text) return;
+  send({ cmd: "say", text }); i.value = "";
+}
+$("chatsend").onclick = sendChat;
+$("chatinput").onkeydown = e => { if (e.key === "Enter") sendChat(); };
 buildSettings(); poll(); setInterval(poll, 1000);
 </script>
 </body>
