@@ -5,7 +5,8 @@
 param(
     [string]$GameDir = "",
     [switch]$NoPause,
-    [switch]$NoShortcut
+    [switch]$NoShortcut,
+    [switch]$SkipRunningCheck   # for testing only
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -58,7 +59,7 @@ if (-not (Test-Path (Join-Path $win64 "Astro-Win64-Shipping.exe"))) {
 Write-Host "Game folder: $win64"
 
 # 2. the game must be closed (it locks the mod files)
-while (Get-Process -Name "Astro-Win64-Shipping" -ErrorAction SilentlyContinue) {
+while (-not $SkipRunningCheck -and (Get-Process -Name "Astro-Win64-Shipping" -ErrorAction SilentlyContinue)) {
     Write-Host "Astroneer is running. Close it, then press Enter." -ForegroundColor Yellow
     if ($NoPause) { Write-Host "Astroneer is running." -ForegroundColor Red; Finish 1 }
     Read-Host | Out-Null
@@ -87,16 +88,24 @@ if ($base) {
         $verFile = Join-Path $tempRoot "version.txt"
         Invoke-WebRequest -UseBasicParsing -Uri "$base/version.txt" -OutFile $verFile
         $latest = (Get-Content $verFile -Raw).Trim()
-        if ($installedVersion -and $installedVersion -eq $latest) {
-            Write-Host "Already up to date (version $latest)." -ForegroundColor Green
+        # a zip handed over by hand can be newer than the published release: never install something older
+        $payloadVersion = Read-Version (Join-Path $payload "ue4ss\Mods\CoopCombat\version.txt")
+        $target = $latest
+        if ($payloadVersion -and [string]::CompareOrdinal($payloadVersion, $latest) -ge 0) { $target = $payloadVersion }
+        if ($installedVersion -and [string]::CompareOrdinal($installedVersion, $target) -ge 0) {
+            Write-Host "Already up to date (version $installedVersion)." -ForegroundColor Green
             Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
             Finish 0
         }
-        Write-Host "Downloading version $latest ..."
-        $zip = Join-Path $tempRoot "update.zip"
-        Invoke-WebRequest -UseBasicParsing -Uri "$base/CoopCombat-update.zip" -OutFile $zip
-        Expand-Archive -Path $zip -DestinationPath (Join-Path $tempRoot "x") -Force
-        $src = Join-Path $tempRoot "x\payload"
+        if ($target -ne $latest) {
+            Write-Host "Using the files that came with this installer (version $payloadVersion, newer than the published $latest)."
+        } else {
+            Write-Host "Downloading version $latest ..."
+            $zip = Join-Path $tempRoot "update.zip"
+            Invoke-WebRequest -UseBasicParsing -Uri "$base/CoopCombat-update.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath (Join-Path $tempRoot "x") -Force
+            $src = Join-Path $tempRoot "x\payload"
+        }
     } catch {
         Write-Host "Download failed: $($_.Exception.Message)" -ForegroundColor Yellow
         if (Test-Path $payload) { Write-Host "Using the files that came with this installer instead." }
@@ -150,6 +159,18 @@ if (Test-Path $json) {
 } else {
     Copy-Item (Join-Path $src "ue4ss\Mods\mods.json") $json -Force
 }
+
+# 5b. switch off the UE4SS sample mods we don't use (fewer things hooked into the game = fewer crashes)
+$unused = @("CheatManagerEnablerMod", "ConsoleCommandsMod", "ConsoleEnablerMod", "BPML_GenericFunctions", "BPModLoaderMod")
+$t = [System.IO.File]::ReadAllText($txt)
+foreach ($u in $unused) { $t = [regex]::Replace($t, "(?m)^$u\s*:\s*\d", "$u : 0") }
+[System.IO.File]::WriteAllText($txt, $t)
+$list = @(Get-Content $json -Raw | ConvertFrom-Json | ForEach-Object { $_ })
+foreach ($m in $list) { if ($unused -contains $m.mod_name) { $m.mod_enabled = $false } }
+ConvertTo-Json -InputObject $list -Depth 4 | Set-Content $json -Encoding UTF8
+
+# the mod writes a small "last thing I did" file here, useful for finding crashes
+New-Item -ItemType Directory -Path (Join-Path $modDir "panel") -Force | Out-Null
 
 # 6. keep a copy of the updater next to the mod, and put a shortcut on the desktop
 $updaterDir = Join-Path $modDir "updater"

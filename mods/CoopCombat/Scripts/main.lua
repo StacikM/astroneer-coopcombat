@@ -12,6 +12,17 @@ local REVIVE_SECONDS = 3 -- stand this long next to a downed player to revive th
 local downed = {} -- address -> { astro, speed, jump, boost, token }
 local nextToken = 0
 
+-- Breadcrumb: the last step the mod reached, rewritten constantly. If the game crashes, panel/breadcrumb.txt
+-- says what the mod was doing at that moment.
+local crumbPath = (debug.getinfo(1, "S").source:gsub("^@", ""):gsub("[Ss]cripts[\\/]main%.lua$", "")) .. "panel\\breadcrumb.txt"
+local function crumb(step)
+    local f = io.open(crumbPath, "w")
+    if f then
+        f:write(os.date("%H:%M:%S") .. " " .. step .. "\n")
+        f:close()
+    end
+end
+
 local function pawnOf(pc)
     local ok, pawn = pcall(function()
         if not pc:IsValid() then return nil end
@@ -25,9 +36,11 @@ end
 local function getPlayers()
     local me, others = nil, {}
     local ok = pcall(function()
+        crumb("getPlayers: FindAllOf")
         local list = FindAllOf("PlayController")
         if type(list) ~= "table" then return end
         for i = 1, #list do
+            crumb("getPlayers: controller " .. i)
             local pc = list[i]
             local pawn = pawnOf(pc)
             if pawn then
@@ -85,6 +98,7 @@ local function findByAddress(addr)
     return nil
 end
 
+
 local function say(fmt, ...) print("[CoopCombat] " .. string.format(fmt, ...) .. "\n") end
 
 local hudWasOn, hudErrShown = false, false
@@ -119,6 +133,7 @@ local finalDeath = {} -- address -> true while a bleed-out kill is in progress, 
 -- HUD: reuse the game's own low-health overlay (HealthImage) and a text block (Tutorial_Text)
 local savedHud = nil
 local function setOverlay(hud, on)
+    crumb("setOverlay " .. tostring(on))
     pcall(function()
         if on then
             if not savedHud then
@@ -144,6 +159,7 @@ end
 
 -- returns true once the HUD was reachable
 local function setHud(on, secondsLeft)
+    crumb("setHud " .. tostring(on))
     local hud = FindFirstOf("PlayWidgetInstance_C")
     if not hud or not hud:IsValid() then return false end
     setOverlay(hud, on)
@@ -175,6 +191,7 @@ end
 local promptWasOn = false
 local reviveTarget, reviveStart = nil, 0
 local function setPrompt(show, text)
+    crumb("setPrompt " .. tostring(show))
     local hud = FindFirstOf("PlayWidgetInstance_C")
     if not alive(hud) then return end
     local ok, err = pcall(function()
@@ -198,6 +215,7 @@ local function nearbyDownedOther(me, others)
 end
 
 local function hudTick()
+    crumb("hudTick")
     local me, others = getPlayers()
     -- forget downed players that are gone (died, respawned, left). Compare addresses only.
     local present = {}
@@ -242,6 +260,7 @@ LoopAsync(100, function()
 end)
 
 local function goDown(astro)
+    crumb("goDown")
     local key = astro:GetAddress()
     if downed[key] then return end
     local mv = astro.AstroMovementComponent
@@ -272,6 +291,7 @@ local function goDown(astro)
 end
 
 function revive(astro)
+    crumb("revive")
     local key = astro:GetAddress()
     local st = downed[key]
     if not st then return end
@@ -286,6 +306,7 @@ function revive(astro)
 end
 
 local function killPlayer(astro)
+    crumb("killPlayer")
     local key = astro:GetAddress()
     downed[key] = nil
     finalDeath[key] = true
@@ -325,6 +346,7 @@ local function speedOf(mv)
 end
 
 local function fallTick()
+    crumb("fallTick")
     local me = getLocalCached()
     if not me or not me:IsValid() then return end
     local key = me:GetAddress()
@@ -379,6 +401,7 @@ end)
 LoopAsync(50, function()
     ExecuteInGameThread(function()
         pcall(function()
+            crumb("watcher")
             local me = getLocalCached()
             if me and not downed[me:GetAddress()] and not finalDeath[me:GetAddress()] and me.bIsAlive ~= 0 and me.Health <= 0.02 then
                 say("caught lethal health (%.3f)", me.Health)
@@ -392,6 +415,7 @@ end)
 
 -- Explode: spawn EXPLODE_COUNT dynamite on the player and detonate them, in small batches to avoid a hitch.
 local function explodePlayer(astro)
+    crumb("explodePlayer")
     local key = astro:GetAddress()
     downed[key] = nil
     finalDeath[key] = true -- the blast is meant to kill: don't rescue into the downed state
@@ -502,6 +526,7 @@ local function playerJson(astro, isLocal, n)
 end
 
 local function writeState()
+    crumb("writeState")
     local me, others = getPlayers()
     local list, n = {}, 0
     if alive(me) then n = n + 1 table.insert(list, playerJson(me, true, n)) end
@@ -538,6 +563,7 @@ local settable = {
 }
 
 local function runCommand(line)
+    crumb("command " .. line)
     local cmd, a, b = line:match("^(%a+)%s+(%S+)%s*(%S*)")
     if not cmd then return end
     if cmd == "set" then

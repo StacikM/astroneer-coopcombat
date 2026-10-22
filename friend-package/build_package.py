@@ -47,7 +47,9 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
             if norm.startswith("ue4ss/Mods/CoopCombat/"):
                 continue  # the mod itself is taken from the project below
             if f == "UE4SS-settings.ini":
-                txt = re.sub(r"(?m)^GuiConsoleVisible = 1", "GuiConsoleVisible = 0", open(full, encoding="utf-8").read())
+                txt = open(full, encoding="utf-8").read()
+                txt = re.sub(r"(?m)^GuiConsoleEnabled = 1", "GuiConsoleEnabled = 0", txt)
+                txt = re.sub(r"(?m)^GuiConsoleVisible = 1", "GuiConsoleVisible = 0", txt)
                 z.writestr(arc, txt)
             elif f == "mods.txt":
                 txt = open(full, encoding="utf-8-sig").read().replace("CoopCombat : 0", "CoopCombat : 1")
