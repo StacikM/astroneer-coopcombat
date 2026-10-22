@@ -67,13 +67,22 @@
   <section>
     <h2>Settings</h2>
     <div id="settings"></div>
-    <p class="empty" style="font-size:13px">Changes apply instantly and reset when the game restarts.</p>
+    <h2 style="margin-top:18px">Gun</h2>
+    <div class="setting"><label><span>Gun item (hold it to shoot)</span></label>
+      <select id="gunitem" style="width:100%;padding:6px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text)">
+        <option>WorkLight</option><option>FloodLight</option><option>Beacon</option><option>Skybreaker</option><option>Battery</option></select></div>
+    <div class="setting"><label><span>Fire button</span></label>
+      <select id="gunkey" style="width:100%;padding:6px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text)">
+        <option value="LMB">Left mouse</option><option value="RMB">Right mouse</option><option value="MMB">Middle mouse</option><option value="MOUSE4">Mouse 4</option><option value="MOUSE5">Mouse 5</option></select></div>
+    <p class="empty" style="font-size:13px">"Give gun" on a player spawns the item next to them. Pick it up, hold it, press the fire button. Changes apply instantly and reset when the game restarts.</p>
   </section>
 </main>
 <div id="toast"></div>
 <script>
 const SETTINGS = [
   { key: "DAMAGE",            label: "Hurt button damage", min: 0.05, max: 1,    step: 0.05, fmt: v => Math.round(v * 100) + "%" },
+  { key: "GUN_DAMAGE",        label: "Gun damage per shot",     min: 0.05, max: 1,    step: 0.05, fmt: v => Math.round(v * 100) + "%" },
+  { key: "GUN_COOLDOWN",      label: "Gun fire delay",          min: 0.1,  max: 3,    step: 0.1,  fmt: v => v.toFixed(1) + " s" },
   { key: "SNIPE_DAMAGE",      label: "Sniper damage (F9)",      min: 0.05, max: 1,    step: 0.05, fmt: v => Math.round(v * 100) + "%" },
   { key: "HIT_RADIUS",        label: "Sniper hit radius",       min: 20,   max: 300,  step: 10,   fmt: v => v + " cm" },
   { key: "BLEEDOUT_SECONDS",  label: "Bleed-out time",          min: 5,    max: 120,  step: 5,    fmt: v => v + " s" },
@@ -118,6 +127,7 @@ function renderPlayers(players, connected) {
         <button data-c="revive" ${p.downed ? "" : "disabled"}>Revive</button>
         <button data-c="kill" class="danger">Kill</button>
         <button data-c="explode" class="danger">Explode</button>
+        <button data-c="give">Give gun</button>
       </div>`;
     d.querySelector(".name").textContent = p.name;
     d.querySelectorAll("button").forEach(b => b.onclick = () => {
@@ -161,9 +171,19 @@ async function poll() {
     $("chatlog").textContent = (st.chat && st.chat.length) ? st.chat.join("\n") : "No messages yet.";
     renderPlayers(st.players || [], st.connected);
     syncSettings(st.config || {});
+    syncGun(st.strings);
   } catch (e) {
     $("status").className = "pill off"; $("status").textContent = "panel server down";
   }
+}
+function bindGunSelects() {
+  $("gunitem").onchange = e => send({ cmd: "setstr", name: "GUN_ITEM", value: e.target.value });
+  $("gunkey").onchange = e => send({ cmd: "setstr", name: "GUN_KEY", value: e.target.value });
+}
+function syncGun(strings) {
+  if (!strings) return;
+  if (document.activeElement !== $("gunitem") && strings.GUN_ITEM) $("gunitem").value = strings.GUN_ITEM;
+  if (document.activeElement !== $("gunkey") && strings.GUN_KEY) $("gunkey").value = strings.GUN_KEY;
 }
 function sendChat() {
   const i = $("chatinput"); const text = i.value.trim();
@@ -172,7 +192,7 @@ function sendChat() {
 }
 $("chatsend").onclick = sendChat;
 $("chatinput").onkeydown = e => { if (e.key === "Enter") sendChat(); };
-buildSettings(); poll(); setInterval(poll, 1000);
+bindGunSelects(); buildSettings(); poll(); setInterval(poll, 1000);
 </script>
 </body>
 </html>

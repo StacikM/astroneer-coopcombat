@@ -16,12 +16,16 @@ DEFAULT_DATA_DIR = (
 )
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-PLAYER_COMMANDS = {"hurt", "heal", "down", "revive", "kill", "explode"}
+PLAYER_COMMANDS = {"hurt", "heal", "down", "revive", "kill", "explode", "give"}
 SETTINGS = {
-    "DAMAGE", "SNIPE_DAMAGE", "HIT_RADIUS", "BLEEDOUT_SECONDS", "CRAWL_SPEED_SCALE",
+    "DAMAGE", "SNIPE_DAMAGE", "GUN_DAMAGE", "GUN_COOLDOWN", "HIT_RADIUS", "BLEEDOUT_SECONDS", "CRAWL_SPEED_SCALE",
     "DOWNED_HEALTH", "REVIVE_RANGE", "REVIVE_SECONDS", "EXPLODE_COUNT",
 }
 ID_RE = re.compile(r"^\d{1,20}$")
+STR_SETTINGS = {
+    "GUN_ITEM": {"WorkLight", "FloodLight", "Beacon", "Skybreaker", "Battery"},
+    "GUN_KEY": {"LMB", "RMB", "MMB", "MOUSE4", "MOUSE5"},
+}
 
 
 def build_command(body):
@@ -32,6 +36,11 @@ def build_command(body):
             text = "".join(c if c.isprintable() else " " for c in text)[:200].strip()
             if text:
                 return "say " + text
+        return None
+    if cmd == "setstr":
+        name, value = body.get("name"), body.get("value")
+        if name in STR_SETTINGS and value in STR_SETTINGS[name]:
+            return f"setstr {name} {value}"
         return None
     if cmd == "set":
         name, value = body.get("name"), body.get("value")
@@ -44,6 +53,8 @@ def build_command(body):
         amount = body.get("amount")
         if cmd == "hurt" and isinstance(amount, (int, float)) and not isinstance(amount, bool):
             return f"hurt {pid} {float(amount):.4f}"
+        if cmd == "give":
+            return f"give {pid} gun"
         if cmd != "hurt":
             return f"{cmd} {pid}"
     return None

@@ -101,6 +101,14 @@ end
 
 local function say(fmt, ...) print("[CoopCombat] " .. string.format(fmt, ...) .. "\n") end
 
+local function charName(astro)
+    local ok, n = pcall(function() return astro:GetOnlinePlayerName():ToString() end)
+    if ok and type(n) == "string" and n ~= "" then return n end
+    return "Player"
+end
+
+local feed, sendEvt -- kill feed / network events, defined with the chat code below
+
 local hudWasOn, hudErrShown = false, false
 
 -- HUD text is looked up by path every time instead of being kept in a variable: the HUD is rebuilt when you
@@ -232,7 +240,7 @@ local function hudTick()
         if reviveTarget ~= tk then reviveTarget, reviveStart = tk, os.clock() end
         local left = REVIVE_SECONDS - (os.clock() - reviveStart)
         if left <= 0 then
-            revive(target)
+            revive(target, charName(me))
             reviveTarget = nil
             setPrompt(false)
             promptWasOn = false
@@ -261,7 +269,7 @@ LoopAsync(100, function()
     return false
 end)
 
-local function goDown(astro)
+local function goDown(astro, by)
     crumb("goDown")
     local key = astro:GetAddress()
     if downed[key] then return end
@@ -274,6 +282,10 @@ local function goDown(astro)
     mv.JumpVerticalImpulse = 0
     mv.JumpBoostImpulse = 0
     say("DOWNED! %d seconds to be revived", BLEEDOUT_SECONDS)
+    local who = charName(astro)
+    local safe = who:gsub("|", "/")
+    pcall(sendEvt, "DOWN|" .. safe .. "|" .. BLEEDOUT_SECONDS)
+    pcall(feed, by and (by .. " knocked down " .. who) or (who .. " was knocked down"))
     local token = st.token
     ExecuteWithDelay(BLEEDOUT_SECONDS * 1000, function()
         ExecuteInGameThread(function()
@@ -288,11 +300,13 @@ local function goDown(astro)
             local ok3, err3 = pcall(function() a:AuthorityForceKillAstro() end)
             ExecuteWithDelay(5000, function() finalDeath[key] = nil end)
             if not ok3 then say("could not kill: %s", tostring(err3)) end
+            pcall(sendEvt, "UP|" .. safe .. "|dead")
+            pcall(feed, who .. " bled out")
         end)
     end)
 end
 
-function revive(astro)
+function revive(astro, by)
     crumb("revive")
     local key = astro:GetAddress()
     local st = downed[key]
@@ -305,31 +319,39 @@ function revive(astro)
     pcall(function() astro:AuthoritySetIsImmuneToDamage(false, astro) end)
     astro.Health = 0.5
     say("REVIVED")
+    local who = charName(astro)
+    local safe = who:gsub("|", "/")
+    pcall(sendEvt, "UP|" .. safe .. "|revived")
+    pcall(feed, by and (by .. " revived " .. who) or (who .. " was revived"))
 end
 
-local function killPlayer(astro)
+local function killPlayer(astro, by)
     crumb("killPlayer")
     local key = astro:GetAddress()
+    local who = charName(astro)
+    local safe = who:gsub("|", "/")
     downed[key] = nil
     finalDeath[key] = true
     pcall(function() astro:AuthoritySetIsImmuneToDamage(false, astro) end)
     pcall(function() astro:AuthorityForceKillAstro() end)
     ExecuteWithDelay(5000, function() finalDeath[key] = nil end)
+    pcall(sendEvt, "UP|" .. safe .. "|dead")
+    pcall(feed, by and (by .. " killed " .. who) or (who .. " died"))
 end
 
-local function hurt(astro, amount)
+local function hurt(astro, amount, by)
     local before = astro.Health
     local after = before - amount
     if downed[astro:GetAddress()] then
         if after <= 0 then
             say("killed while downed")
-            killPlayer(astro)
+            killPlayer(astro, by)
         else
             astro.Health = after
             say("Health %.2f -> %.2f (downed)", before, after)
         end
     elseif after <= 0 then
-        goDown(astro)
+        goDown(astro, by)
     else
         astro.Health = after
         say("Health %.2f -> %.2f", before, after)
@@ -416,8 +438,9 @@ end)
 
 
 -- Explode: spawn EXPLODE_COUNT dynamite on the player and detonate them, in small batches to avoid a hitch.
-local function explodePlayer(astro)
+local function explodePlayer(astro, by)
     crumb("explodePlayer")
+    pcall(feed, charName(astro) .. " was blown up" .. (by and (" by " .. by) or ""))
     local key = astro:GetAddress()
     downed[key] = nil
     finalDeath[key] = true -- the blast is meant to kill: don't rescue into the downed state
@@ -451,9 +474,22 @@ local function explodePlayer(astro)
     spawnBatch(1)
 end
 
--- Sniper: F9 (the only hotkey) fires along your camera ray at any range and hits the other player closest to the crosshair.
+-- ===== Shooting =====
+-- The host resolves every shot (only the host can see all the players). Clients send the aim to the host.
 local SNIPE_DAMAGE = 0.5
 local HIT_RADIUS = 80 -- cm, how far from the crosshair line still counts as a hit
+local GUN_DAMAGE = 0.2
+local GUN_COOLDOWN = 0.4
+local GUN_ITEM = "WorkLight" -- the item you hold to use the gun
+local GUN_KEY = "LMB"
+local GUN_PROPS = {
+    WorkLight = "/Game/Components_Small/WorkLight.WorkLight_C",
+    FloodLight = "/Game/Components_Small/FloodLight_BP.FloodLight_BP_C",
+    Beacon = "/Game/Components_Small/Beacon_Small_Item.Beacon_Small_Item_C",
+    Skybreaker = "/Game/Components_Small/Skybreaker.Skybreaker_C",
+    Battery = "/Game/Components_Small/Battery.Battery_C",
+}
+local GUN_KEYS = { LMB = true, RMB = true, MMB = true, MOUSE4 = true, MOUSE5 = true }
 
 local function getLocalController()
     local list = FindAllOf("PlayController")
@@ -466,44 +502,99 @@ local function getLocalController()
     return nil
 end
 
-local function aimTarget()
-    local pc = getLocalController()
-    if not pc then return nil end
+local function isHost(pc)
+    local ok, v = pcall(function() return pc:HasAuthority() end)
+    return ok and v == true
+end
+
+-- the player (other than the shooter) closest to a ray
+local function bestOnRay(shooterAddr, origin, dir)
     local me, others = getPlayers()
+    local all = {}
+    if me then table.insert(all, me) end
+    for _, a in ipairs(others) do table.insert(all, a) end
+    local best, bestMiss, bestRange, count = nil, math.huge, 0, 0
+    for _, a in ipairs(all) do
+        if a:GetAddress() ~= shooterAddr then
+            count = count + 1
+            local loc = a:K2_GetActorLocation()
+            local dx, dy, dz = loc.X - origin.X, loc.Y - origin.Y, loc.Z - origin.Z
+            local along = dx * dir.X + dy * dir.Y + dz * dir.Z
+            if along > 0 then
+                local px, py, pz = dx - along * dir.X, dy - along * dir.Y, dz - along * dir.Z
+                local miss = math.sqrt(px * px + py * py + pz * pz)
+                if miss < bestMiss then best, bestMiss, bestRange = a, miss, along end
+            end
+        end
+    end
+    return best, bestMiss, bestRange, count
+end
+
+-- host only: one shot fired by shooterPC (the host's own controller, or a client's)
+local function resolveShot(shooterPC, origin, dir, label)
+    crumb("resolveShot")
+    local shooter = pawnOf(shooterPC)
+    local shooterAddr = shooter and shooter:GetAddress() or 0
+    local damage = (label == "gun") and GUN_DAMAGE or SNIPE_DAMAGE
+    local best, miss, range, count = bestOnRay(shooterAddr, origin, dir)
+    if best and miss <= HIT_RADIUS then
+        say("%s HIT %s at %.0f m (%.0f cm off center)", label, charName(best), range / 100, miss)
+        hurt(best, damage, shooter and charName(shooter) or "Someone")
+    else
+        say("%s missed (%d other players; closest: %s)", label, count,
+            best and string.format("%.0f m away, %.0f cm off the crosshair", range / 100, miss) or "nobody in front of you")
+    end
+end
+
+local function aimRay(pc)
     local cam = pc.PlayerCameraManager
     local origin, rot = cam:GetCameraLocation(), cam:GetCameraRotation()
     local p, y = math.rad(rot.Pitch), math.rad(rot.Yaw)
-    local fx, fy, fz = math.cos(p) * math.cos(y), math.cos(p) * math.sin(y), math.sin(p)
-    local best, bestMiss, bestRange = nil, math.huge, 0
-    for _, a in ipairs(others) do
-        local loc = a:K2_GetActorLocation()
-        local dx, dy, dz = loc.X - origin.X, loc.Y - origin.Y, loc.Z - origin.Z
-        local along = dx * fx + dy * fy + dz * fz
-        if along > 0 then
-            local px, py, pz = dx - along * fx, dy - along * fy, dz - along * fz
-            local miss = math.sqrt(px * px + py * py + pz * pz)
-            if miss < HIT_RADIUS and miss < bestMiss then best, bestMiss, bestRange = a, miss, along end
-        end
-    end
-    return best, bestRange, bestMiss
+    return { X = origin.X, Y = origin.Y, Z = origin.Z },
+        { X = math.cos(p) * math.cos(y), Y = math.cos(p) * math.sin(y), Z = math.sin(p) }
 end
 
-local function snipe()
-    local best, range, miss = aimTarget()
-    if best then
-        say("SNIPE HIT at %.0f m (missed center by %.0f cm)", range / 100, miss)
-        hurt(best, SNIPE_DAMAGE)
+-- the local player fires: the host resolves it directly, a client asks the host
+local function fireLocal(label)
+    local pc = getLocalController()
+    if not pc then return end
+    local origin, dir = aimRay(pc)
+    if isHost(pc) then
+        resolveShot(pc, origin, dir, label)
     else
-        say("snipe missed")
+        pc:ServerExec(string.format("CCFIRE %s %.1f %.1f %.1f %.4f %.4f %.4f", label, origin.X, origin.Y, origin.Z, dir.X, dir.Y, dir.Z))
     end
 end
 
-RegisterKeyBind(Key.F9, function()
-    ExecuteInGameThread(function()
-        local ok, err = pcall(snipe)
-        if not ok then say("snipe error: %s", tostring(err)) end
-    end)
-end)
+-- host side of a client's "CCFIRE" message. The client only says where it aimed, never how much damage.
+local lastFire = {}
+local function hostFire(pc, args)
+    local label, ox, oy, oz, dx, dy, dz = args:match("^(%a+) (%-?[%d%.]+) (%-?[%d%.]+) (%-?[%d%.]+) (%-?[%d%.]+) (%-?[%d%.]+) (%-?[%d%.]+)$")
+    if label ~= "sniper" and label ~= "gun" then return end
+    local key = pc:GetAddress()
+    local now = os.clock()
+    if lastFire[key] and now - lastFire[key] < 0.25 then return end
+    lastFire[key] = now
+    local nx, ny, nz = tonumber(dx), tonumber(dy), tonumber(dz)
+    if not (nx and ny and nz and tonumber(ox) and tonumber(oy) and tonumber(oz)) then return end
+    local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if len < 0.5 then return end
+    resolveShot(pc, { X = tonumber(ox), Y = tonumber(oy), Z = tonumber(oz) }, { X = nx / len, Y = ny / len, Z = nz / len }, label)
+end
+
+-- spawn the gun item next to a player; GUN_ITEM must be one of GUN_PROPS
+local function giveGun(astro)
+    local path = GUN_PROPS[GUN_ITEM]
+    if not path then say("give gun: unknown item '%s'", GUN_ITEM) return end
+    local world = astro:GetWorld()
+    local class = StaticFindObject(path)
+    if not alive(world) or not alive(class) then say("give gun: could not find %s", path) return end
+    local loc = astro:K2_GetActorLocation()
+    local yaw = math.rad(astro:K2_GetActorRotation().Yaw)
+    local pos = { X = loc.X + math.cos(yaw) * 140, Y = loc.Y + math.sin(yaw) * 140, Z = loc.Z + 60 }
+    local ok, a = pcall(function() return world:SpawnActor(class, pos, { Pitch = 0, Yaw = 0, Roll = 0 }) end)
+    say("give gun: %s", (ok and alive(a)) and "spawned, pick it up and hold it" or "spawn failed")
+end
 
 -- ===== Chat =====
 -- Uses the game's own network channels, no outside service:
@@ -538,22 +629,17 @@ local function playerNameOf(pc)
 end
 
 -- host only: push one line to every player's screen
-local function broadcastChat(line, senderPS)
+local function broadcastChat(line, senderPS, mtype)
     crumb("broadcastChat")
     local list = FindAllOf("PlayController")
     if type(list) ~= "table" then return end
     for i = 1, #list do
         local pc = list[i]
         local ok, err = pcall(function()
-            if pc:IsValid() then pc:ClientTeamMessage(senderPS, line, FName(CHAT_TYPE), 8.0) end
+            if pc:IsValid() then pc:ClientTeamMessage(senderPS, line, FName(mtype or CHAT_TYPE), 8.0) end
         end)
         if not ok then say("chat broadcast error: %s", tostring(err)) end
     end
-end
-
-local function isHost(pc)
-    local ok, v = pcall(function() return pc:HasAuthority() end)
-    return ok and v == true
 end
 
 local function sendChat(text)
@@ -580,11 +666,51 @@ local function adminSay(text)
     else say("admin say: only the host can broadcast") end
 end
 
+-- ===== network events (kill feed, down markers) =====
+-- Same channel as chat but another message type. Text format: KIND|field|field
+--   FEED|text          a line for the kill feed
+--   DOWN|name|seconds  a player is downed (drives the marker)
+--   UP|name|reason     a player was revived or died
+local CHAT_EVT = "CoopEvt"
+local remote = { down = {} } -- player name -> { untilT }
+
+function sendEvt(text)
+    local pc = getLocalController()
+    if not pc then return end
+    if isHost(pc) then
+        broadcastChat(text, pc.PlayerState, CHAT_EVT)
+    else
+        pcall(function() pc:ServerExec("CCEVT " .. text) end)
+    end
+end
+
+function feed(text)
+    sendEvt("FEED|" .. text)
+end
+
+local function handleEvt(text)
+    local kind, rest = text:match("^(%u+)|(.*)$")
+    if kind == "FEED" then
+        addChatLine("[Feed] " .. rest)
+    elseif kind == "DOWN" then
+        local name, secs = rest:match("^(.-)|([%d%.]+)$")
+        if name then remote.down[name] = { untilT = os.clock() + (tonumber(secs) or BLEEDOUT_SECONDS) } end
+    elseif kind == "UP" then
+        local name = rest:match("^(.-)|")
+        if name then remote.down[name] = nil end
+    end
+end
+
 -- receive: every machine shows lines that arrive with our message type
 pcall(function()
     RegisterHook("/Script/Engine.PlayerController:ClientTeamMessage", function(self, senderPS, s, mtype, life)
         local ok, err = pcall(function()
-            if mtype:get():ToString() == CHAT_TYPE then addChatLine(s:get():ToString()) end
+            local t = mtype:get():ToString()
+            if t == CHAT_TYPE then
+                addChatLine(s:get():ToString())
+            elseif t == CHAT_EVT then
+                handleEvt(s:get():ToString())
+            end
         end)
         if not ok then say("chat receive error: %s", tostring(err)) end
     end)
@@ -596,11 +722,23 @@ pcall(function()
         local ok, err = pcall(function()
             local pc = self:get()
             if not isHost(pc) then return end
-            local body = msg:get():ToString():match("^CCHAT (.*)$")
-            if not body then return end
-            body = cleanChat(body)
-            if body == "" then return end
-            broadcastChat(playerNameOf(pc) .. ": " .. body, pc.PlayerState)
+            local text = msg:get():ToString()
+            local body = text:match("^CCHAT (.*)$")
+            if body then
+                body = cleanChat(body)
+                if body ~= "" then broadcastChat(playerNameOf(pc) .. ": " .. body, pc.PlayerState) end
+                return
+            end
+            local evt = text:match("^CCEVT (.*)$")
+            if evt then
+                local kind = evt:match("^(%u+)|")
+                if kind == "FEED" or kind == "DOWN" or kind == "UP" then
+                    broadcastChat(evt:sub(1, 200), pc.PlayerState, CHAT_EVT)
+                end
+                return
+            end
+            local fire = text:match("^CCFIRE (.*)$")
+            if fire then hostFire(pc, fire) end
         end)
         if not ok then say("chat host error: %s", tostring(err)) end
     end)
@@ -677,10 +815,66 @@ local function submitChat()
     sendChat(text)
 end
 
+-- down marker: "Friend DOWN 18s  >>  43m" for every downed player we know about, with the direction to them
+local markerState = { t = 0, text = nil, hud = nil }
+local function markerTick(hud)
+    local now = os.clock()
+    if now - markerState.t < 0.3 then return end
+    markerState.t = now
+    local lines = {}
+    local pc = getLocalController()
+    if pc then
+        local ok, err = pcall(function()
+            local cam = pc.PlayerCameraManager
+            local origin, rot = cam:GetCameraLocation(), cam:GetCameraRotation()
+            local mePawn = pawnOf(pc)
+            local myName = mePawn and charName(mePawn) or ""
+            local chars = nil
+            for name, st in pairs(remote.down) do
+                local left = st.untilT - now
+                if left <= 0 then
+                    remote.down[name] = nil
+                elseif name ~= myName then
+                    chars = chars or FindAllOf("AstroCharacter")
+                    if type(chars) == "table" then
+                        for i = 1, #chars do
+                            local a = chars[i]
+                            if alive(a) and charName(a) == name then
+                                local loc = a:K2_GetActorLocation()
+                                local dx, dy, dz = loc.X - origin.X, loc.Y - origin.Y, loc.Z - origin.Z
+                                local rel = math.deg(math.atan(dy, dx)) - rot.Yaw
+                                while rel > 180 do rel = rel - 360 end
+                                while rel < -180 do rel = rel + 360 end
+                                local arrow = "^"
+                                if rel > 135 or rel < -135 then arrow = "v" elseif rel > 45 then arrow = ">>" elseif rel < -45 then arrow = "<<" end
+                                local meters = math.sqrt(dx * dx + dy * dy + dz * dz) / 100
+                                table.insert(lines, string.format("%s DOWN %ds   %s   %dm", name, math.ceil(left), arrow, meters))
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+        if not ok then say("marker error: %s", tostring(err)) end
+    end
+    table.sort(lines)
+    local text = table.concat(lines, "\n")
+    local hudAddr = hud:GetAddress()
+    if text == markerState.text and hudAddr == markerState.hud then return end
+    markerState.text, markerState.hud = text, hudAddr
+    pcall(function()
+        local t = getText(hud, "CoopMarker", 34, 0.1, { R = 1.0, G = 0.6, B = 0.1, A = 1.0 })
+        t:SetText(FText(text))
+        t:SetVisibility(text ~= "" and 4 or 1)
+    end)
+end
+
 -- the on-screen log (bottom left): shows for a while after a message, or while the box is open
 function chatTick()
     local hud = FindFirstOf("PlayWidgetInstance_C")
     if not alive(hud) then return end
+    pcall(markerTick, hud)
     if chat.open and not getLocalController() then chat.open = false end
     local visible = #chat.lines > 0 and (chat.open or os.clock() - chat.lastShown < CHAT_FADE_SECONDS)
     local text = visible and table.concat(chat.lines, "\n") or ""
@@ -714,6 +908,51 @@ RegisterKeyBind(Key.ESCAPE, function()
     end)
 end)
 
+-- F9 is the only hotkey: the sniper (fires along your crosshair, any range)
+RegisterKeyBind(Key.F9, function()
+    ExecuteInGameThread(function()
+        local ok, err = pcall(fireLocal, "sniper")
+        if not ok then say("sniper error: %s", tostring(err)) end
+    end)
+end)
+
+-- the gun: hold the gun item, press the chosen mouse button
+local gunLast = 0
+local function holdingGun(pc)
+    local me = pawnOf(pc)
+    if not me then return false end
+    local ok, v = pcall(function()
+        local item = me.HeldItem
+        return alive(item) and item:GetFullName():find(GUN_ITEM, 1, true) ~= nil
+    end)
+    return ok and v == true
+end
+
+local function gunKeyPressed(name)
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function()
+            if name ~= GUN_KEY or chat.open then return end
+            local now = os.clock()
+            if now - gunLast < GUN_COOLDOWN then return end
+            local pc = getLocalController()
+            if not pc or not holdingGun(pc) then return end
+            gunLast = now
+            fireLocal("gun")
+        end)
+        if not ok then say("gun error: %s", tostring(err)) end
+    end)
+end
+
+local function bindGunKey(name, keyEnum)
+    if keyEnum == nil then return end
+    pcall(function() RegisterKeyBind(keyEnum, function() gunKeyPressed(name) end) end)
+end
+bindGunKey("LMB", Key.LEFT_MOUSE_BUTTON)
+bindGunKey("RMB", Key.RIGHT_MOUSE_BUTTON)
+bindGunKey("MMB", Key.MIDDLE_MOUSE_BUTTON)
+bindGunKey("MOUSE4", Key.XBUTTON_ONE)
+bindGunKey("MOUSE5", Key.XBUTTON_TWO)
+
 -- Admin panel bridge: writes panel/state.json once a second, executes lines from panel/commands.txt.
 -- The local web panel (panel/server.py) is the other end. Nothing here listens on the network.
 local panelDir = (debug.getinfo(1, "S").source:gsub("^@", ""):gsub("[Ss]cripts[\\/]main%.lua$", "")) .. "panel\\"
@@ -744,13 +983,13 @@ local function writeState()
     for _, a in ipairs(others) do
         if alive(a) then n = n + 1 table.insert(list, playerJson(a, false, n)) end
     end
-    local cfg = string.format('{"DAMAGE":%.3f,"SNIPE_DAMAGE":%.3f,"HIT_RADIUS":%.0f,"BLEEDOUT_SECONDS":%.1f,"CRAWL_SPEED_SCALE":%.3f,"DOWNED_HEALTH":%.3f,"REVIVE_RANGE":%.0f,"REVIVE_SECONDS":%.1f,"EXPLODE_COUNT":%d}',
-        DAMAGE, SNIPE_DAMAGE, HIT_RADIUS, BLEEDOUT_SECONDS, CRAWL_SPEED_SCALE, DOWNED_HEALTH, REVIVE_RANGE, REVIVE_SECONDS, EXPLODE_COUNT)
+    local cfg = string.format('{"DAMAGE":%.3f,"SNIPE_DAMAGE":%.3f,"GUN_DAMAGE":%.3f,"GUN_COOLDOWN":%.2f,"HIT_RADIUS":%.0f,"BLEEDOUT_SECONDS":%.1f,"CRAWL_SPEED_SCALE":%.3f,"DOWNED_HEALTH":%.3f,"REVIVE_RANGE":%.0f,"REVIVE_SECONDS":%.1f,"EXPLODE_COUNT":%d}',
+        DAMAGE, SNIPE_DAMAGE, GUN_DAMAGE, GUN_COOLDOWN, HIT_RADIUS, BLEEDOUT_SECONDS, CRAWL_SPEED_SCALE, DOWNED_HEALTH, REVIVE_RANGE, REVIVE_SECONDS, EXPLODE_COUNT)
     local f = io.open(panelDir .. "state.json", "w")
     if not f then return end
     local chatJson = {}
     for _, l in ipairs(chat.lines) do table.insert(chatJson, jstr(l)) end
-    f:write(string.format('{"time":%d,"creative":%s,"players":[%s],"config":%s,"chat":[%s]}', os.time(), tostring(creativeOn()), table.concat(list, ","), cfg, table.concat(chatJson, ",")))
+    f:write(string.format('{"time":%d,"creative":%s,"players":[%s],"config":%s,"strings":{"GUN_ITEM":%s,"GUN_KEY":%s},"chat":[%s]}', os.time(), tostring(creativeOn()), table.concat(list, ","), cfg, jstr(GUN_ITEM), jstr(GUN_KEY), table.concat(chatJson, ",")))
     f:close()
 end
 
@@ -766,6 +1005,8 @@ end
 local settable = {
     DAMAGE = { 0.01, 1, function(v) DAMAGE = v end },
     SNIPE_DAMAGE = { 0.01, 1, function(v) SNIPE_DAMAGE = v end },
+    GUN_DAMAGE = { 0.01, 1, function(v) GUN_DAMAGE = v end },
+    GUN_COOLDOWN = { 0.1, 3, function(v) GUN_COOLDOWN = v end },
     HIT_RADIUS = { 20, 500, function(v) HIT_RADIUS = v end },
     BLEEDOUT_SECONDS = { 5, 300, function(v) BLEEDOUT_SECONDS = v end },
     CRAWL_SPEED_SCALE = { 0.02, 1, function(v) CRAWL_SPEED_SCALE = v end },
@@ -783,6 +1024,11 @@ local function runCommand(line)
     end
     local cmd, a, b = line:match("^(%a+)%s+(%S+)%s*(%S*)")
     if not cmd then return end
+    if cmd == "setstr" then
+        if a == "GUN_ITEM" and GUN_PROPS[b] then GUN_ITEM = b say("panel: GUN_ITEM = %s", b)
+        elseif a == "GUN_KEY" and GUN_KEYS[b] then GUN_KEY = b say("panel: GUN_KEY = %s", b) end
+        return
+    end
     if cmd == "set" then
         local def, val = settable[a], tonumber(b)
         if def and val then def[3](math.max(def[1], math.min(def[2], val))) say("panel: %s = %s", a, b) end
@@ -790,14 +1036,15 @@ local function runCommand(line)
     end
     local astro = findPlayer(a)
     if not astro then say("panel: player %s not found", a) return end
-    if cmd == "hurt" then hurt(astro, tonumber(b) or DAMAGE)
+    if cmd == "hurt" then hurt(astro, tonumber(b) or DAMAGE, "Admin")
     elseif cmd == "heal" then
         if downed[astro:GetAddress()] then revive(astro) end
         astro.Health = astro.MaxHealth
-    elseif cmd == "down" then goDown(astro)
-    elseif cmd == "revive" then revive(astro)
-    elseif cmd == "kill" then killPlayer(astro)
-    elseif cmd == "explode" then explodePlayer(astro)
+    elseif cmd == "down" then goDown(astro, "Admin")
+    elseif cmd == "revive" then revive(astro, "Admin")
+    elseif cmd == "kill" then killPlayer(astro, "Admin")
+    elseif cmd == "explode" then explodePlayer(astro, "Admin")
+    elseif cmd == "give" then giveGun(astro)
     end
     say("panel: %s", line)
 end
@@ -826,4 +1073,4 @@ LoopAsync(400, function()
     return false
 end)
 
-print("[CoopCombat] loaded: controlled from the admin panel; Enter opens the chat\n")
+print("[CoopCombat] loaded: panel for admin, Enter = chat, F9 = sniper, hold the gun item + mouse button = gun\n")
