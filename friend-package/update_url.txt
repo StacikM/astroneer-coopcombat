@@ -1,0 +1,2 @@
+# Folder URL that serves version.txt and CoopCombat-update.zip (GitHub "latest release" downloads)
+https://github.com/StacikM/astroneer-coopcombat/releases/latest/download

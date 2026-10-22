@@ -1,0 +1,4 @@
+tools/
+friend-package/dist/
+*.dmp
+*.log

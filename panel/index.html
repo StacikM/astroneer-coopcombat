@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CoopCombat Admin</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #181d24; --line: #262d37; --text: #e6e9ee; --dim: #8b94a3;
+    --accent: #5aa9ff; --good: #3ecf8e; --warn: #f5a524; --bad: #ff5c6c;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f3f5f8; --panel: #ffffff; --line: #dde2ea; --text: #1a2029; --dim: #5d6776; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .02em; }
+  .pill { margin-left: auto; padding: 4px 12px; border-radius: 999px; font-size: 13px; border: 1px solid var(--line); color: var(--dim); }
+  .pill.on { color: var(--good); border-color: var(--good); }
+  .pill.off { color: var(--bad); border-color: var(--bad); }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px; display: grid; gap: 20px; grid-template-columns: 1fr; }
+  @media (min-width: 900px) { main { grid-template-columns: 1.6fr 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 12px; }
+  .player { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  .player.downed { border-color: var(--bad); }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .name { font-weight: 600; }
+  .tag { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--line); color: var(--dim); }
+  .tag.bad { background: var(--bad); color: #fff; }
+  .bar { height: 10px; border-radius: 6px; background: var(--line); margin: 10px 0; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--good); transition: width .3s; }
+  .player.downed .bar > div { background: var(--bad); }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--text); padding: 6px 12px; border-radius: 8px; }
+  button:hover { border-color: var(--accent); }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .4; cursor: default; }
+  .setting { margin-bottom: 14px; }
+  .setting label { display: flex; justify-content: space-between; color: var(--dim); font-size: 13px; }
+  .setting b { color: var(--text); font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .empty { color: var(--dim); padding: 12px 0; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CoopCombat Admin</h1>
+  <span class="pill" id="creative" hidden>creative mode: natural damage off</span>
+  <span class="pill off" id="status" style="margin-left:0">mod not connected</span>
+</header>
+<main>
+  <section>
+    <h2>Players</h2>
+    <div id="players"><div class="empty">Waiting for the game…</div></div>
+  </section>
+  <section>
+    <h2>Settings</h2>
+    <div id="settings"></div>
+    <p class="empty" style="font-size:13px">Changes apply instantly and reset when the game restarts.</p>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+const SETTINGS = [
+  { key: "DAMAGE",            label: "Hurt button damage", min: 0.05, max: 1,    step: 0.05, fmt: v => Math.round(v * 100) + "%" },
+  { key: "SNIPE_DAMAGE",      label: "Sniper damage (F9)",      min: 0.05, max: 1,    step: 0.05, fmt: v => Math.round(v * 100) + "%" },
+  { key: "HIT_RADIUS",        label: "Sniper hit radius",       min: 20,   max: 300,  step: 10,   fmt: v => v + " cm" },
+  { key: "BLEEDOUT_SECONDS",  label: "Bleed-out time",          min: 5,    max: 120,  step: 5,    fmt: v => v + " s" },
+  { key: "CRAWL_SPEED_SCALE", label: "Crawl speed when downed", min: 0.05, max: 1,    step: 0.05, fmt: v => Math.round(v * 100) + "%" },
+  { key: "DOWNED_HEALTH",     label: "Health when knocked down", min: 0.05, max: 1,   step: 0.05, fmt: v => Math.round(v * 100) + "%" },
+  { key: "EXPLODE_COUNT",     label: "Dynamite per explosion",  min: 1,    max: 100,  step: 1,    fmt: v => v + "" },
+  { key: "REVIVE_RANGE",      label: "Revive range",            min: 100,  max: 2000, step: 50,   fmt: v => (v / 100).toFixed(1) + " m" },
+  { key: "REVIVE_SECONDS",    label: "Walk-up revive time",     min: 1,    max: 15,   step: 1,    fmt: v => v + " s" },
+];
+const $ = id => document.getElementById(id);
+let dragging = null, lastConfig = {};
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 1600);
+}
+
+async function send(body) {
+  try {
+    const r = await fetch("/api/cmd", { method: "POST", headers: { "X-Panel": "1", "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    toast(r.ok ? "Sent" : "Rejected");
+  } catch (e) { toast("Panel server not reachable"); }
+}
+
+function renderPlayers(players, connected) {
+  const box = $("players");
+  if (!connected) { box.innerHTML = '<div class="empty">Waiting for the game… (is CoopCombat enabled and a world loaded?)</div>'; return; }
+  if (!players.length) { box.innerHTML = '<div class="empty">No players found.</div>'; return; }
+  box.innerHTML = "";
+  for (const p of players) {
+    const d = document.createElement("div");
+    d.className = "player" + (p.downed ? " downed" : "");
+    const pct = Math.max(0, Math.min(100, (p.health / (p.maxHealth || 1)) * 100));
+    d.innerHTML = `
+      <div class="row"><span class="name"></span>${p.local ? '<span class="tag">you</span>' : ""}${p.downed ? `<span class="tag bad">DOWNED ${Math.ceil(p.bleed)}s</span>` : ""}
+        <span style="margin-left:auto;color:var(--dim)">${Math.round(pct)}%</span></div>
+      <div class="bar"><div style="width:${pct}%"></div></div>
+      <div class="row">
+        <button data-c="hurt">Hurt</button>
+        <button data-c="heal">Heal</button>
+        <button data-c="down">Down</button>
+        <button data-c="revive" ${p.downed ? "" : "disabled"}>Revive</button>
+        <button data-c="kill" class="danger">Kill</button>
+        <button data-c="explode" class="danger">Explode</button>
+      </div>`;
+    d.querySelector(".name").textContent = p.name;
+    d.querySelectorAll("button").forEach(b => b.onclick = () => {
+      const c = b.dataset.c;
+      if ((c === "kill" || c === "explode") && !confirm((c === "kill" ? "Kill " : "Explode ") + p.name + "?")) return;
+      send({ cmd: c, id: p.id, amount: lastConfig.DAMAGE || 0.25 });
+    });
+    box.appendChild(d);
+  }
+}
+
+function buildSettings() {
+  const box = $("settings");
+  for (const s of SETTINGS) {
+    const w = document.createElement("div"); w.className = "setting";
+    w.innerHTML = `<label><span>${s.label}</span><b id="v_${s.key}"></b></label>
+      <input type="range" id="r_${s.key}" min="${s.min}" max="${s.max}" step="${s.step}">`;
+    box.appendChild(w);
+    const r = w.querySelector("input");
+    r.oninput = () => { dragging = s.key; $("v_" + s.key).textContent = s.fmt(parseFloat(r.value)); };
+    r.onchange = () => { send({ cmd: "set", name: s.key, value: parseFloat(r.value) }); dragging = null; };
+  }
+}
+
+function syncSettings(cfg) {
+  lastConfig = cfg;
+  for (const s of SETTINGS) {
+    if (dragging === s.key || cfg[s.key] === undefined) continue;
+    $("r_" + s.key).value = cfg[s.key];
+    $("v_" + s.key).textContent = s.fmt(cfg[s.key]);
+  }
+}
+
+async function poll() {
+  try {
+    const st = await (await fetch("/api/state")).json();
+    const pill = $("status");
+    pill.className = "pill " + (st.connected ? "on" : "off");
+    pill.textContent = st.connected ? "mod connected" : "mod not connected";
+    $("creative").hidden = !(st.connected && st.creative);
+    renderPlayers(st.players || [], st.connected);
+    syncSettings(st.config || {});
+  } catch (e) {
+    $("status").className = "pill off"; $("status").textContent = "panel server down";
+  }
+}
+buildSettings(); poll(); setInterval(poll, 1000);
+</script>
+</body>
+</html>
