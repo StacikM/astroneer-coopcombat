@@ -586,7 +586,22 @@ local function resolveShot(shooterPC, origin, dir, label)
     end
 end
 
+local aimLogged = false
+-- Astroneer aims with the mouse cursor, not a crosshair in the middle of the screen, so the ray goes through the
+-- cursor. If that call doesn't give an answer, fall back to the middle of the screen.
 local function aimRay(pc)
+    local loc, dir = {}, {}
+    local ok, r1, r2, r3 = pcall(function() return pc:DeprojectMousePositionToWorld(loc, dir) end)
+    local function vec(t) return t and type(t) == "table" and t.X ~= nil and t.Y ~= nil and t.Z ~= nil end
+    if ok then
+        if not vec(loc) and vec(r2) then loc = r2 end
+        if not vec(dir) and vec(r3) then dir = r3 end
+    end
+    if ok and vec(loc) and vec(dir) then
+        if not aimLogged then aimLogged = true say("aim: using the mouse cursor") end
+        return { X = loc.X, Y = loc.Y, Z = loc.Z }, { X = dir.X, Y = dir.Y, Z = dir.Z }
+    end
+    if not aimLogged then aimLogged = true say("aim: cursor deprojection gave nothing (%s), using screen center", tostring(ok and "empty" or r1)) end
     local cam = pc.PlayerCameraManager
     local origin, rot = cam:GetCameraLocation(), cam:GetCameraRotation()
     local p, y = math.rad(rot.Pitch), math.rad(rot.Yaw)
@@ -857,11 +872,14 @@ local function closeChat()
         end)
     end
     if pc then
-        pcall(function()
-            local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
-            lib:SetInputMode_GameOnly(pc)
-            pc.bShowMouseCursor = false
-        end)
+        local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+        -- Astroneer plays with a visible mouse cursor, so put the cursor back the way we found it. The game's own
+        -- input mode isn't known, so try the likely ones until one works.
+        local restored = pcall(function() lib:SetInputMode_GameAndUIEx(pc, nil, 0, false) end)
+        if not restored then restored = pcall(function() lib:SetInputMode_GameOnly(pc) end) end
+        pcall(function() lib:SetFocusToGameViewport() end)
+        if chat.prevCursor ~= nil then pcall(function() pc.bShowMouseCursor = chat.prevCursor end) end
+        say("chat closed (input mode restored: %s)", tostring(restored))
     end
 end
 
@@ -869,19 +887,20 @@ local function openChat()
     crumb("openChat")
     local pc = getLocalController()
     local hud = FindFirstOf("PlayWidgetInstance_C")
-    if not pc or not alive(hud) then return end
-    -- a visible mouse cursor means a menu is open: Enter there must not open the chat
-    local cursor = pc.bShowMouseCursor
-    if cursor == true or (type(cursor) == "number" and cursor ~= 0) then return end
+    if not pc then say("chat: Enter pressed but there is no local controller") return end
+    if not alive(hud) then say("chat: Enter pressed but the HUD isn't ready") return end
     local box = getInputBox(hud)
     box:SetText(FText(""))
     box:SetVisibility(0)
+    local ok, prev = pcall(function() return pc.bShowMouseCursor end)
+    if ok then chat.prevCursor = (prev == true) or (type(prev) == "number" and prev ~= 0) end
     local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
     lib:SetInputMode_UIOnlyEx(pc, box, 0)
     pc.bShowMouseCursor = true
     box:SetKeyboardFocus()
     chat.open = true
     chat.lastShown = os.clock()
+    say("chat opened (cursor was visible: %s)", tostring(chat.prevCursor))
 end
 
 local function submitChat()
@@ -974,6 +993,7 @@ end
 RegisterKeyBind(Key.RETURN, function()
     ExecuteInGameThread(function()
         local ok, err = pcall(function()
+            say("chat: Enter pressed (box open: %s)", tostring(chat.open))
             if chat.open then submitChat() else openChat() end
         end)
         if not ok then
