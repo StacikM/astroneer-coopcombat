@@ -682,6 +682,39 @@ local function broadcastChat(line, senderPS, mtype)
     end
 end
 
+-- Chat commands. Anything typed in chat that starts with "/" is a command, not a public message. The host runs them.
+local ALLOW_GIVEGUN = 1 -- panel switch: may players get a gun with /givemegun?
+local cmdLast = {} -- player address -> time of their last command
+
+-- a one-line answer shown only to the player who typed the command
+local function replyTo(pc, line)
+    pcall(function() pc:ClientTeamMessage(pc.PlayerState, line, FName(CHAT_TYPE), 8.0) end)
+end
+
+local function runChatCommand(pc, text)
+    local cmd = text:match("^/(%S+)")
+    local key = pc:GetAddress()
+    local now = os.clock()
+    if cmdLast[key] and now - cmdLast[key] < 5 then
+        replyTo(pc, "[Server] slow down, wait a few seconds between commands")
+        return
+    end
+    cmdLast[key] = now
+    if cmd == "givemegun" then
+        if ALLOW_GIVEGUN == 0 then
+            replyTo(pc, "[Server] /givemegun is turned off")
+            return
+        end
+        local pawn = pawnOf(pc)
+        if not pawn then replyTo(pc, "[Server] you have no character right now") return end
+        giveGun(pawn)
+        replyTo(pc, "[Server] a " .. GUN_ITEM .. " is next to you. Pick it up, hold it, and use the fire button.")
+        pcall(feed, charName(pawn) .. " got a gun")
+    else
+        replyTo(pc, "[Server] unknown command. Try /givemegun")
+    end
+end
+
 local function sendChat(text)
     text = cleanChat(text)
     if text == "" then return end
@@ -690,6 +723,10 @@ local function sendChat(text)
     local pc = getLocalController()
     if not pc then say("chat: no local controller") return end
     if isHost(pc) then
+        if text:sub(1, 1) == "/" then
+            runChatCommand(pc, text)
+            return
+        end
         broadcastChat(playerNameOf(pc) .. ": " .. text, pc.PlayerState)
     else
         local ok, err = pcall(function() pc:ServerExec("CCHAT " .. text) end)
@@ -766,7 +803,11 @@ pcall(function()
             local body = text:match("^CCHAT (.*)$")
             if body then
                 body = cleanChat(body)
-                if body ~= "" then broadcastChat(playerNameOf(pc) .. ": " .. body, pc.PlayerState) end
+                if body:sub(1, 1) == "/" then
+                    runChatCommand(pc, body)
+                elseif body ~= "" then
+                    broadcastChat(playerNameOf(pc) .. ": " .. body, pc.PlayerState)
+                end
                 return
             end
             local evt = text:match("^CCEVT (.*)$")
@@ -1023,8 +1064,8 @@ local function writeState()
     for _, a in ipairs(others) do
         if alive(a) then n = n + 1 table.insert(list, playerJson(a, false, n)) end
     end
-    local cfg = string.format('{"DAMAGE":%.3f,"SNIPE_DAMAGE":%.3f,"GUN_DAMAGE":%.3f,"GUN_COOLDOWN":%.2f,"HIT_RADIUS":%.0f,"BLEEDOUT_SECONDS":%.1f,"CRAWL_SPEED_SCALE":%.3f,"DOWNED_HEALTH":%.3f,"REVIVE_RANGE":%.0f,"REVIVE_SECONDS":%.1f,"EXPLODE_COUNT":%d,"PVP_IN_CREATIVE":%d}',
-        DAMAGE, SNIPE_DAMAGE, GUN_DAMAGE, GUN_COOLDOWN, HIT_RADIUS, BLEEDOUT_SECONDS, CRAWL_SPEED_SCALE, DOWNED_HEALTH, REVIVE_RANGE, REVIVE_SECONDS, EXPLODE_COUNT, PVP_IN_CREATIVE)
+    local cfg = string.format('{"DAMAGE":%.3f,"SNIPE_DAMAGE":%.3f,"GUN_DAMAGE":%.3f,"GUN_COOLDOWN":%.2f,"HIT_RADIUS":%.0f,"BLEEDOUT_SECONDS":%.1f,"CRAWL_SPEED_SCALE":%.3f,"DOWNED_HEALTH":%.3f,"REVIVE_RANGE":%.0f,"REVIVE_SECONDS":%.1f,"EXPLODE_COUNT":%d,"PVP_IN_CREATIVE":%d,"ALLOW_GIVEGUN":%d}',
+        DAMAGE, SNIPE_DAMAGE, GUN_DAMAGE, GUN_COOLDOWN, HIT_RADIUS, BLEEDOUT_SECONDS, CRAWL_SPEED_SCALE, DOWNED_HEALTH, REVIVE_RANGE, REVIVE_SECONDS, EXPLODE_COUNT, PVP_IN_CREATIVE, ALLOW_GIVEGUN)
     local f = io.open(panelDir .. "state.json", "w")
     if not f then return end
     local chatJson = {}
@@ -1053,6 +1094,7 @@ local settable = {
     DOWNED_HEALTH = { 0.05, 1, function(v) DOWNED_HEALTH = v end },
     EXPLODE_COUNT = { 1, 100, function(v) EXPLODE_COUNT = math.floor(v) end },
     PVP_IN_CREATIVE = { 0, 1, function(v) PVP_IN_CREATIVE = (v >= 0.5) and 1 or 0 end },
+    ALLOW_GIVEGUN = { 0, 1, function(v) ALLOW_GIVEGUN = (v >= 0.5) and 1 or 0 end },
     REVIVE_RANGE = { 100, 3000, function(v) REVIVE_RANGE = v end },
     REVIVE_SECONDS = { 1, 30, function(v) REVIVE_SECONDS = v end },
 }
