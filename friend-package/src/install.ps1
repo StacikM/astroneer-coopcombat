@@ -82,13 +82,17 @@ if ($base) {
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Write-Host "Checking for updates..."
-        $latest = (Invoke-WebRequest -UseBasicParsing -Uri "$base/version.txt").Content.Trim()
+        New-Item -ItemType Directory -Path $tempRoot | Out-Null
+        # download to a file and read that: GitHub serves version.txt as a binary type, so .Content comes back as bytes
+        $verFile = Join-Path $tempRoot "version.txt"
+        Invoke-WebRequest -UseBasicParsing -Uri "$base/version.txt" -OutFile $verFile
+        $latest = (Get-Content $verFile -Raw).Trim()
         if ($installedVersion -and $installedVersion -eq $latest) {
             Write-Host "Already up to date (version $latest)." -ForegroundColor Green
+            Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
             Finish 0
         }
         Write-Host "Downloading version $latest ..."
-        New-Item -ItemType Directory -Path $tempRoot | Out-Null
         $zip = Join-Path $tempRoot "update.zip"
         Invoke-WebRequest -UseBasicParsing -Uri "$base/CoopCombat-update.zip" -OutFile $zip
         Expand-Archive -Path $zip -DestinationPath (Join-Path $tempRoot "x") -Force
