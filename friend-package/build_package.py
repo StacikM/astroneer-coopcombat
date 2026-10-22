@@ -19,7 +19,7 @@ DIST = os.path.join(HERE, "dist")
 MOD = os.path.join(PROJECT, "mods", "CoopCombat")
 os.makedirs(DIST, exist_ok=True)
 
-version = time.strftime("%Y.%m.%d-%H%M")
+version = time.strftime("%Y.%m.%d-%H%M%S")
 SKIP_DIRS = {"CXXHeaderDump", "panel", "updater", "CoopCombat.backup"}
 SKIP_FILES = {"UE4SS.log", "imgui.ini", "UE4SS_ObjectDump.txt"}
 
