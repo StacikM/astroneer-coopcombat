@@ -698,7 +698,7 @@ local SHUTTLE_VEHICLES = {
     normal = "/Game/Vehicles/Shuttle.Shuttle_C",
     xl = "/Game/Vehicles/Shuttle_XLarge.Shuttle_XLarge_C",
 }
-local function spawnShuttle(astro, size)
+local function spawnShuttle(astro, size, withParts)
     crumb("spawnShuttle")
     local path = SHUTTLE_VEHICLES[size] or SHUTTLE_VEHICLES.normal
     local world = astro:GetWorld()
@@ -714,7 +714,23 @@ local function spawnShuttle(astro, size)
     local ok, a = pcall(function() return world:SpawnActor(class, pos, { Pitch = 0, Yaw = yaw, Roll = 0 }) end)
     local worked = ok and alive(a)
     say("spawnshuttle: %s at 9 m in front of the player (%s)", path, worked and "spawned" or "spawn failed")
-    return worked and "a shuttle was spawned about 9 m in front of you" or "the shuttle could not be spawned"
+    if not worked then return "the shuttle could not be spawned" end
+    if not withParts then return "a shuttle was spawned about 9 m in front of you" end
+    -- loose parts next to it: two medium thrusters (they go into the two medium slots of the thruster module).
+    -- The module itself and attaching parts to slots needs the game's slot system, which isn't safe to drive from here.
+    local thrusterClass = StaticFindObject("/Game/Components_Medium/Thruster_Medium.Thruster_Medium_C")
+    local spawned = 0
+    if alive(thrusterClass) then
+        local side = rad + math.pi / 2
+        for i = 1, 2 do
+            local offset = (i == 1) and 350 or -350
+            local ppos = { X = pos.X + math.cos(side) * offset, Y = pos.Y + math.sin(side) * offset, Z = pos.Z + 100 }
+            local okp, p = pcall(function() return world:SpawnActor(thrusterClass, ppos, { Pitch = 0, Yaw = yaw, Roll = 0 }) end)
+            if okp and alive(p) then spawned = spawned + 1 end
+        end
+    end
+    say("spawnshuttle: %d medium thrusters spawned next to it", spawned)
+    return string.format("a shuttle and %d medium thruster(s) were spawned in front of you", spawned)
 end
 
 -- ===== Chat =====
@@ -794,8 +810,9 @@ local function runChatCommand(pc, text)
     elseif cmd == "spawnshuttle" then
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
-        local size = (text:match("^/%S+%s+(%S+)") or ""):lower()
-        replyTo(pc, "[Server] " .. spawnShuttle(pawn, size))
+        local args = (text:match("^/%S+%s+(.*)$") or ""):lower()
+        local size = args:find("xl", 1, true) and "xl" or "normal"
+        replyTo(pc, "[Server] " .. spawnShuttle(pawn, size, args:find("parts", 1, true) ~= nil))
     elseif cmd == "tptoshuttle" then
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
