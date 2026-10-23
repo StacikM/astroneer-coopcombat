@@ -110,6 +110,7 @@ end
 local feed, sendEvt -- kill feed / network events, defined with the chat code below
 local allowDamage -- creative-mode PvP switch, defined below
 local changeMission, setMissionsEnabled -- mission helpers, defined below
+local applyLayout -- keyboard layout switch, defined with the typing code below
 
 local hudWasOn, hudErrShown = false, false
 
@@ -1045,7 +1046,7 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true, enablemissions = true, disablemissions = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true, enablemissions = true, disablemissions = true, layout = true }
 
 -- Missions. The game has a missions manager actor with its own list of every mission, and functions to activate or
 -- complete one. Mission ids are names (FNames, case does not matter).
@@ -1174,6 +1175,15 @@ local function sendChat(text)
     end
     if lowered == "/probe" then pcall(probe) return end
     if lowered == "/planets" then pcall(showPlanets) return end
+    if lowered:find("^/layout") then
+        local wanted = (text:match("^/%S+%s+(%S+)") or ""):lower()
+        if applyLayout(wanted) then
+            addChatLine("[Layout] keyboard layout set to " .. wanted .. " (remembered for next time)")
+        else
+            addChatLine("[Layout] type layout us or layout azerty")
+        end
+        return
+    end
     if lowered:find("^/missions") then pcall(showMissions, text:match("^/%S+%s+(.*)$")) return end
     if lowered == "/hardness" then pcall(ignoreHardness) return end
     if os.clock() - chat.lastSent < 0.5 then return end
@@ -1578,41 +1588,124 @@ TYPE_KEYS.DECIMAL = { ".", "." }
 local NUMPAD_NAMES = { "NUM_ZERO", "NUM_ONE", "NUM_TWO", "NUM_THREE", "NUM_FOUR", "NUM_FIVE", "NUM_SIX", "NUM_SEVEN", "NUM_EIGHT", "NUM_NINE" }
 for i = 1, 10 do TYPE_KEYS[NUMPAD_NAMES[i]] = { tostring(i - 1), tostring(i - 1) } end
 
-local function shiftDown()
-    if IsKeyBindDown == nil then return false end
-    local ok, v = pcall(function() return IsKeyBindDown(Key.LEFT_SHIFT) or IsKeyBindDown(Key.RIGHT_SHIFT) end)
-    return ok and v == true
+TYPE_KEYS.OEM_EIGHT = { "", "" } -- exists on some layouts only (AZERTY has "!" here)
+
+-- Layouts. Windows tells the mod which physical key was pressed, not the character it makes on your keyboard, so the
+-- mod needs to know your layout. "us" is the default. "azerty" is the French layout. The command "layout azerty" (or
+-- "layout us") switches it and remembers the choice. Each entry is { normal, with Shift }.
+local layoutPath = (debug.getinfo(1, "S").source:gsub("^@", ""):gsub("[Ss]cripts[\\/]main%.lua$", "")) .. "panel\\layout.txt"
+local LAYOUTS = {
+    us = {},
+    azerty = {
+        ONE = { "&", "1" }, TWO = { "é", "2" }, THREE = { '"', "3" }, FOUR = { "'", "4" }, FIVE = { "(", "5" },
+        SIX = { "-", "6" }, SEVEN = { "è", "7" }, EIGHT = { "_", "8" }, NINE = { "ç", "9" }, ZERO = { "à", "0" },
+        OEM_FOUR = { ")", "°" }, OEM_PLUS = { "=", "+" }, OEM_SIX = { "^", "¨" }, OEM_ONE = { "$", "£" },
+        OEM_THREE = { "ù", "%" }, OEM_FIVE = { "*", "µ" }, OEM_COMMA = { ",", "?" }, OEM_PERIOD = { ";", "." },
+        OEM_TWO = { ":", "/" }, OEM_EIGHT = { "!", "§" }, OEM_SEVEN = { "²", "²" },
+    },
+}
+local usDefaults = {}
+for key, entry in pairs(TYPE_KEYS) do usDefaults[key] = { entry[1], entry[2] } end
+
+function applyLayout(name)
+    if not LAYOUTS[name] then return false end
+    for key, entry in pairs(usDefaults) do TYPE_KEYS[key] = { entry[1], entry[2] } end
+    for key, entry in pairs(LAYOUTS[name]) do TYPE_KEYS[key] = entry end
+    local f = io.open(layoutPath, "w")
+    if f then
+        f:write(name)
+        f:close()
+    end
+    return true
 end
 
-local function typingKeyPressed(name)
-    ExecuteInGameThread(function()
-        local ok, err = pcall(function()
-            if not chat.open then return end
-            if name == "BACKSPACE" then
-                chat.buffer = (chat.buffer or ""):sub(1, -2)
-            else
-                local entry = TYPE_KEYS[name]
-                if not entry or #(chat.buffer or "") >= 200 then return end
-                chat.buffer = (chat.buffer or "") .. (shiftDown() and entry[2] or entry[1])
+do -- load the layout saved last time
+    local f = io.open(layoutPath, "r")
+    if f then
+        local saved = (f:read("*l") or ""):gsub("%s", "")
+        f:close()
+        if LAYOUTS[saved] then applyLayout(saved) end
+    end
+end
+
+-- Key presses are queued, then typed out about 0.12 s later. When Shift is held, UE4SS fires both the plain bind and the
+-- Shift bind for the same press, so a plain press with a Shift twin is dropped here and only the shifted one is typed.
+local typingQueue = {}
+local MERGE_WINDOW = 0.12
+
+local function queueKey(name, shifted)
+    if not chat.open then return end
+    table.insert(typingQueue, { name = name, shifted = shifted, t = os.clock() })
+end
+
+local function hopKey(name, shifted)
+    ExecuteInGameThread(function() queueKey(name, shifted) end)
+end
+
+local function drainTyping()
+    if #typingQueue == 0 then return end
+    local now = os.clock()
+    local groups, order = {}, {}
+    for _, e in ipairs(typingQueue) do
+        local g = groups[e.name]
+        if not g then
+            g = { name = e.name, first = e.t, last = e.t, plain = 0, shifted = 0 }
+            groups[e.name] = g
+            table.insert(order, g)
+        end
+        g.last = e.t
+        if e.shifted then g.shifted = g.shifted + 1 else g.plain = g.plain + 1 end
+    end
+    local waiting = {}
+    local ready = {}
+    for _, g in ipairs(order) do
+        if now - g.last >= MERGE_WINDOW then table.insert(ready, g) else table.insert(waiting, g.name) end
+    end
+    if #ready == 0 then return end
+    local waitingSet = {}
+    for _, n in ipairs(waiting) do waitingSet[n] = true end
+    local rest = {}
+    for _, e in ipairs(typingQueue) do
+        if waitingSet[e.name] then table.insert(rest, e) end
+    end
+    typingQueue = rest
+    table.sort(ready, function(a, b) return a.first < b.first end)
+    for _, g in ipairs(ready) do
+        if g.name == "BACKSPACE" then
+            for _ = 1, g.plain do chat.buffer = (chat.buffer or ""):sub(1, -2) end
+        else
+            local entry = TYPE_KEYS[g.name]
+            if entry then
+                local plainOnly = math.max(0, g.plain - g.shifted)
+                for _ = 1, plainOnly do
+                    if #(chat.buffer or "") < 200 then chat.buffer = (chat.buffer or "") .. entry[1] end
+                end
+                for _ = 1, g.shifted do
+                    if #(chat.buffer or "") < 200 then chat.buffer = (chat.buffer or "") .. entry[2] end
+                end
             end
-            renderBuffer()
-        end)
-        if not ok then say("typing error: %s", tostring(err)) end
-    end)
+        end
+    end
+    renderBuffer()
 end
 
-local boundKeys = 0
+local boundKeys, boundShift = 0, 0
+local shiftModifier = (ModifierKey ~= nil) and ModifierKey.SHIFT or nil
 for name in pairs(TYPE_KEYS) do
     local keyEnum = Key[name]
     if keyEnum ~= nil then
-        pcall(function() RegisterKeyBind(keyEnum, function() typingKeyPressed(name) end) end)
+        pcall(function() RegisterKeyBind(keyEnum, function() hopKey(name, false) end) end)
         boundKeys = boundKeys + 1
+        if shiftModifier ~= nil then
+            local okShift = pcall(function() RegisterKeyBind(keyEnum, { shiftModifier }, function() hopKey(name, true) end) end)
+            if okShift then boundShift = boundShift + 1 end
+        end
     end
 end
 if Key.BACKSPACE ~= nil then
-    pcall(function() RegisterKeyBind(Key.BACKSPACE, function() typingKeyPressed("BACKSPACE") end) end)
+    pcall(function() RegisterKeyBind(Key.BACKSPACE, function() hopKey("BACKSPACE", false) end) end)
 end
-say("chat typing: %d keys bound, shift detection %s", boundKeys, IsKeyBindDown ~= nil and "available" or "not available (lowercase only)")
+say("chat typing: %d keys bound, %d with Shift, layout %s", boundKeys, boundShift, "see layout.txt")
 
 -- F9 is the only hotkey: the sniper (fires along your crosshair, any range)
 RegisterKeyBind(Key.F9, function()
@@ -1782,6 +1875,7 @@ end
 local tickCount = 0
 local function masterTick()
     tickCount = tickCount + 1
+    pcall(drainTyping)
     pcall(hudTick)
     pcall(fallTick)
     pcall(watcherTick)
