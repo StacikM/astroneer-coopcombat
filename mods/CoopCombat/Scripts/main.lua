@@ -651,6 +651,55 @@ local function giveGun(astro)
     say("give gun: %s", (ok and alive(a)) and "spawned, pick it up and hold it" or "spawn failed")
 end
 
+-- Teleport a player next to the shuttle nearest to them. The host does this to the player's character.
+-- Returns a short message for the player.
+-- The personal shuttle (the one you fly to other planets with) is tried first; other shuttles only if none exists.
+local PERSONAL_SHUTTLE = { "BP_PersonalBeepyShuttle_C" }
+local OTHER_SHUTTLES = { "Shuttle", "Shuttle_C", "Shuttle_Large_C", "Dropship_C" }
+
+-- the nearest live actor of any of these classes to a point
+local function nearestOf(classNames, from)
+    local best, bestDist, bestName = nil, math.huge, ""
+    local seen = {}
+    for _, className in ipairs(classNames) do
+        local list = FindAllOf(className)
+        if type(list) == "table" then
+            for i = 1, #list do
+                pcall(function()
+                    local s = list[i]
+                    local addr = s:GetAddress()
+                    if seen[addr] or not s:IsValid() then return end
+                    seen[addr] = true
+                    local name = s:GetFullName()
+                    if name:find("Default__", 1, true) or name:find("_GEN_VARIABLE", 1, true) then return end
+                    local l = s:K2_GetActorLocation()
+                    local d = math.sqrt((l.X - from.X) ^ 2 + (l.Y - from.Y) ^ 2 + (l.Z - from.Z) ^ 2)
+                    if d < bestDist then best, bestDist, bestName = s, d, name end
+                end)
+            end
+        end
+    end
+    return best, bestDist, bestName
+end
+
+local function tpToShuttle(astro)
+    crumb("tpToShuttle")
+    local from = astro:K2_GetActorLocation()
+    local best, bestDist, bestName = nearestOf(PERSONAL_SHUTTLE, from)
+    if not best then best, bestDist, bestName = nearestOf(OTHER_SHUTTLES, from) end
+    if not best then
+        say("tptoshuttle: no shuttle found")
+        return "no shuttle found in this world"
+    end
+    local l = best:K2_GetActorLocation()
+    local target = { X = l.X + 250, Y = l.Y, Z = l.Z + 300 }
+    say("tptoshuttle: %s is %.0f m away, teleporting to it", bestName, bestDist / 100)
+    local ok, err = pcall(function() astro:K2_SetActorLocation(target, false, {}, true) end)
+    if not ok then say("tptoshuttle error: %s", tostring(err)) return "teleport failed" end
+    pcall(function() astro.AstroMovementComponent:ZeroVelocity() end)
+    return string.format("teleported next to a shuttle (%.0f m away)", bestDist / 100)
+end
+
 -- ===== Chat =====
 -- Uses the game's own network channels, no outside service:
 --   client -> host : the engine RPC PlayerController:ServerExec carrying "CCHAT <text>". It does nothing in a shipping
@@ -725,6 +774,11 @@ local function runChatCommand(pc, text)
         giveGun(pawn)
         replyTo(pc, "[Server] a " .. GUN_ITEM .. " is next to you. Pick it up, hold it, and use the fire button.")
         pcall(feed, charName(pawn) .. " got a gun")
+    elseif cmd == "tptoshuttle" then
+        local pawn = pawnOf(pc)
+        if not pawn then replyTo(pc, "[Server] you have no character right now") return end
+        local msg = tpToShuttle(pawn)
+        replyTo(pc, "[Server] " .. msg)
     elseif cmd == "nobarrier" then
         sendEvt("BARRIER|0")
         pcall(feed, "world barriers removed")
@@ -734,7 +788,7 @@ local function runChatCommand(pc, text)
         pcall(feed, "world barriers restored")
         replyTo(pc, "[Server] barriers restored.")
     else
-        replyTo(pc, "[Server] unknown command. Try /givemegun, /nobarrier or /barrier")
+        replyTo(pc, "[Server] unknown command. Try givemegun, tptoshuttle, nobarrier or barrier")
     end
 end
 
@@ -804,7 +858,7 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true }
 
 local function sendChat(text)
     text = cleanChat(text)
