@@ -771,9 +771,36 @@ local function spawnSatellite(astro)
     crumb("spawnSatellite")
     local path = "/Game/Story/EXO_Satellite"
     if LoadAsset == nil then return "this UE4SS version cannot load assets on demand" end
-    local okLoad, errLoad = pcall(function() LoadAsset(path) end)
-    say("satellite: LoadAsset %s (%s)", path, okLoad and "ok" or tostring(errLoad))
+    local okLoad, loaded = pcall(function() return LoadAsset(path) end)
+    say("satellite: LoadAsset %s (%s)", path, okLoad and "ok" or tostring(loaded))
+    -- whatever LoadAsset handed back, and every object that now belongs to that package
+    if okLoad and loaded ~= nil then
+        pcall(function()
+            say("satellite: LoadAsset returned %s (%s)", tostring(loaded:GetFullName()), tostring(loaded:GetClass():GetFullName()))
+        end)
+    end
+    if ForEachUObject ~= nil then
+        local count = 0
+        pcall(function()
+            ForEachUObject(function(obj)
+                pcall(function()
+                    local name = obj:GetFullName()
+                    if name:find("/Game/Story/EXO_Satellite", 1, true) and count < 40 then
+                        count = count + 1
+                        say("satellite: object %s", name)
+                    end
+                end)
+            end)
+        end)
+        say("satellite: %d objects belong to the EXO_Satellite package", count)
+    end
     local class = StaticFindObject(path .. ".EXO_Satellite_C")
+    if not alive(class) and okLoad and loaded ~= nil then
+        pcall(function()
+            local fullName = loaded:GetFullName()
+            if fullName:find("Class", 1, true) then class = loaded end
+        end)
+    end
     if not alive(class) then
         local asset = StaticFindObject(path .. ".EXO_Satellite")
         say("satellite: no EXO_Satellite_C class; asset object: %s", alive(asset) and asset:GetFullName() or "none")
