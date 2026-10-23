@@ -701,7 +701,8 @@ local function tpToShuttle(astro)
     local l = pick.actor:K2_GetActorLocation()
     local target = { X = l.X + 250, Y = l.Y, Z = l.Z + 300 }
     say("tptoshuttle: going to %s, %.0f m away", pick.class, pick.dist / 100)
-    local ok, err = pcall(function() astro:K2_SetActorLocation(target, false, {}, true) end)
+    -- K2_TeleportTo has no output parameters (K2_SetActorLocation needs a hit-result struct, which is risky from Lua)
+    local ok, err = pcall(function() astro:K2_TeleportTo(target, astro:K2_GetActorRotation()) end)
     if not ok then say("tptoshuttle error: %s", tostring(err)) return "teleport failed" end
     pcall(function() astro.AstroMovementComponent:ZeroVelocity() end)
     return string.format("teleported next to %s (%.0f m away)", pick.class, pick.dist / 100)
@@ -827,41 +828,15 @@ local function probe()
         local mv = me.AstroMovementComponent
         say("probe: movement mode %s, speed %.0f, gravity %.0f", tostring(mv.CurrentMovementMode), mv.MaxSpeed, mv.Gravity)
     end)
-    local actors = {}
-    local ok = pcall(function() me:GetOverlappingActors(actors) end)
-    local names = {}
-    for i = 1, #actors do
-        pcall(function() table.insert(names, actors[i]:GetFullName()) end)
-    end
-    say("probe: overlapping actors (%s): %d %s", tostring(ok), #names, table.concat(names, " | "))
-    local comps = {}
-    local ok2 = pcall(function() me.CapsuleComponent:GetOverlappingComponents(comps) end)
-    local cnames = {}
-    for i = 1, #comps do
-        pcall(function() table.insert(cnames, comps[i]:GetFullName()) end)
-    end
-    say("probe: overlapping components (%s): %d %s", tostring(ok2), #cnames, table.concat(cnames, " | "))
+    -- (the overlap queries were removed: they hand the game an array as a plain table, which is risky)
     addChatLine("[Probe] details written to UE4SS.log")
 end
 
--- /hardness: the creative-mode switch that lets the terrain tool dig through hard ground (maybe the core)
+-- /hardness used to call the game's "ignore terrain hardness" function on every terrain tool in the world. That crashed
+-- Astroneer itself (a tool with no owner), so it now only prints a hint and touches nothing. Use the switch in the
+-- creative terrain menu instead.
 local function ignoreHardness()
-    crumb("ignoreHardness")
-    local list = FindAllOf("DeformTool")
-    local n = 0
-    if type(list) == "table" then
-        for i = 1, #list do
-            pcall(function()
-                local t = list[i]
-                if t:IsValid() and not t:GetFullName():find("Default__", 1, true) then
-                    t:ServerSetIsIgnoringTerrainHardnessCreative(true)
-                    n = n + 1
-                end
-            end)
-        end
-    end
-    say("hardness: asked %d terrain tools to ignore terrain hardness", n)
-    addChatLine(string.format("[Hardness] %d terrain tool(s) set to ignore hardness (creative mode only)", n))
+    addChatLine("[Hardness] this command crashed the game, so it does nothing now. Use the creative terrain menu's ignore-hardness switch.")
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
@@ -1048,7 +1023,7 @@ local function getInputBox(hud)
         if found ~= nil and found:IsValid() then return found end
     end
     local box = StaticConstructObject(StaticFindObject("/Script/UMG.EditableTextBox"), tree, FName("CoopChatInput"))
-    box:SetHintText(FText("Type a message or a command (givemegun, probe, hardness, nobarrier), Enter to send"))
+    box:SetHintText(FText("Type a message or a command (givemegun, tptoshuttle, probe), Enter to send"))
     local slot = tree.RootWidget:AddChild(box)
     slot:SetAnchors({ Minimum = { X = 0.02, Y = 0.8 }, Maximum = { X = 0.02, Y = 0.8 } })
     slot:SetAlignment({ X = 0, Y = 0.5 })
