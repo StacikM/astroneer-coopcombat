@@ -109,7 +109,7 @@ end
 
 local feed, sendEvt -- kill feed / network events, defined with the chat code below
 local allowDamage -- creative-mode PvP switch, defined below
-local changeMission -- activates/completes a mission, defined below
+local changeMission, setMissionsEnabled -- mission helpers, defined below
 
 local hudWasOn, hudErrShown = false, false
 
@@ -955,6 +955,8 @@ local function runChatCommand(pc, text)
     elseif cmd == "startmission" or cmd == "completemission" then
         local id = text:match("^/%S+%s+(%S+)")
         replyTo(pc, "[Server] " .. changeMission(id, cmd == "completemission"))
+    elseif cmd == "enablemissions" or cmd == "disablemissions" then
+        replyTo(pc, "[Server] " .. setMissionsEnabled(cmd == "enablemissions"))
     elseif cmd == "spawnsatellite" then
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
@@ -1043,7 +1045,7 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true, enablemissions = true, disablemissions = true }
 
 -- Missions. The game has a missions manager actor with its own list of every mission, and functions to activate or
 -- complete one. Mission ids are names (FNames, case does not matter).
@@ -1094,11 +1096,43 @@ local function showMissions(filter)
 end
 
 -- /startmission <id> and /completemission <id>: ask the game to activate or complete a mission. Host only.
+-- Creative mode switches missions off through a flag on the manager. /enablemissions flips it for the session and
+-- /disablemissions puts it back the way it was. (Whether the game honours that outside its normal flow is untested.)
+local missionsWereDisabled = nil
+
+local function missionsDisabled(m)
+    local ok, v = pcall(function() return m.bMissionsDisabled end)
+    if not ok then return nil end
+    return v == true or (type(v) == "number" and v ~= 0)
+end
+
+function setMissionsEnabled(enable)
+    crumb("setMissionsEnabled")
+    local m = missionsManager()
+    if not m then return "no missions manager found" end
+    local now = missionsDisabled(m)
+    say("missions: manager says disabled=%s", tostring(now))
+    if enable then
+        if missionsWereDisabled == nil then missionsWereDisabled = now end
+        local ok, err = pcall(function() m.bMissionsDisabled = false end)
+        if not ok then say("missions: could not switch them on: %s", tostring(err)) return "could not switch missions on (details in the log)" end
+        return string.format("missions switched on (they were %s). disablemissions puts it back.", now and "off" or "already on")
+    end
+    local restore = (missionsWereDisabled == nil) and true or missionsWereDisabled
+    local ok, err = pcall(function() m.bMissionsDisabled = restore end)
+    if not ok then say("missions: could not restore: %s", tostring(err)) return "could not restore the setting (details in the log)" end
+    missionsWereDisabled = nil
+    return restore and "missions are off again" or "missions left on (that was the original setting)"
+end
+
 function changeMission(id, complete)
     crumb("changeMission")
     local m = missionsManager()
     if not m then return "no missions manager found" end
     if id == nil or id == "" then return "type the mission id after the command (see missions)" end
+    if missionsDisabled(m) then
+        return "missions are switched off in this world (creative mode). Type enablemissions first, or use a survival world"
+    end
     local ok, err = pcall(function()
         if complete then
             m:AuthorityCompleteMission(FName(id))
