@@ -109,6 +109,7 @@ end
 
 local feed, sendEvt -- kill feed / network events, defined with the chat code below
 local allowDamage -- creative-mode PvP switch, defined below
+local changeMission -- activates/completes a mission, defined below
 
 local hudWasOn, hudErrShown = false, false
 
@@ -951,6 +952,9 @@ local function runChatCommand(pc, text)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
         local msg = tpToShuttle(pawn)
         replyTo(pc, "[Server] " .. msg)
+    elseif cmd == "startmission" or cmd == "completemission" then
+        local id = text:match("^/%S+%s+(%S+)")
+        replyTo(pc, "[Server] " .. changeMission(id, cmd == "completemission"))
     elseif cmd == "spawnsatellite" then
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
@@ -1039,7 +1043,73 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true }
+
+-- Missions. The game has a missions manager actor with its own list of every mission, and functions to activate or
+-- complete one. Mission ids are names (FNames, case does not matter).
+local function missionsManager()
+    local m = FindFirstOf("AstroMissionsManager")
+    if m ~= nil and m:IsValid() then return m end
+    return nil
+end
+
+-- /missions [word]: lists missions whose id or title contains the word, with [active] or [done]. Read-only, local.
+local function showMissions(filter)
+    crumb("showMissions")
+    local m = missionsManager()
+    if not m then addChatLine("[Missions] no missions manager found") return end
+    filter = (filter or ""):lower()
+    local state = {}
+    pcall(function()
+        local ids = m:GetActiveMissionIds()
+        for i = 1, #ids do state[ids[i]:ToString():lower()] = "active" end
+    end)
+    pcall(function()
+        local ids = m:GetCompletedMissionIds()
+        for i = 1, #ids do state[ids[i]:ToString():lower()] = "done" end
+    end)
+    local shown, total = 0, 0
+    local ok, err = pcall(function()
+        local all = m:GetAllMissions()
+        for i = 1, #all do
+            pcall(function()
+                local e = all[i]
+                local id = e.missionId:ToString()
+                local title = ""
+                pcall(function() title = e.Title:ToString() end)
+                total = total + 1
+                local st = state[id:lower()] or "locked"
+                say("mission: %s | %s | %s", id, title, st)
+                if filter == "" or id:lower():find(filter, 1, true) or title:lower():find(filter, 1, true) then
+                    if shown < 6 then
+                        addChatLine(string.format("[Missions] %s - %s [%s]", id, title, st))
+                    end
+                    shown = shown + 1
+                end
+            end)
+        end
+    end)
+    if not ok then say("missions error: %s", tostring(err)) end
+    addChatLine(string.format("[Missions] %d of %d match (all are listed in UE4SS.log)", shown, total))
+end
+
+-- /startmission <id> and /completemission <id>: ask the game to activate or complete a mission. Host only.
+function changeMission(id, complete)
+    crumb("changeMission")
+    local m = missionsManager()
+    if not m then return "no missions manager found" end
+    if id == nil or id == "" then return "type the mission id after the command (see missions)" end
+    local ok, err = pcall(function()
+        if complete then
+            m:AuthorityCompleteMission(FName(id))
+        else
+            m:AuthorityActivateMission(FName(id), "", true)
+        end
+    end)
+    say("mission: %s %s (%s)", complete and "complete" or "activate", id, ok and "sent" or tostring(err))
+    if not ok then return "that failed (details in the log)" end
+    return (complete and "asked the game to complete " or "asked the game to activate ") .. id
+end
 
 -- /planets: shows every planet and station with its number and the name the game uses. Runs on your own PC.
 local function showPlanets()
@@ -1068,6 +1138,7 @@ local function sendChat(text)
     end
     if lowered == "/probe" then pcall(probe) return end
     if lowered == "/planets" then pcall(showPlanets) return end
+    if lowered:find("^/missions") then pcall(showMissions, text:match("^/%S+%s+(.*)$")) return end
     if lowered == "/hardness" then pcall(ignoreHardness) return end
     if os.clock() - chat.lastSent < 0.5 then return end
     chat.lastSent = os.clock()
