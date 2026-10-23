@@ -868,6 +868,32 @@ local function spawnDropship(astro)
     return worked and "a dropship was spawned about 9 m in front of you" or "the dropship could not be spawned"
 end
 
+-- /spawnshuttle ready: ask the game's own item-spawning function (the one the creative catalog uses) for a Small Shuttle,
+-- instead of spawning a bare chassis myself. It is called on the sender's player controller on the host. If the game
+-- refuses (for example outside creative mode) nothing appears; "spawnshuttle parts" is the fallback.
+local function spawnReadyShuttle(pc, astro)
+    crumb("spawnReadyShuttle")
+    local vehicle = StaticFindObject("/Game/Vehicles/Shuttle.Shuttle_C")
+    local itemType = StaticFindObject("/Game/Items/ItemTypes/Components/Shuttle.Shuttle_C")
+    if not alive(vehicle) or not alive(itemType) then
+        say("spawnshuttle ready: could not find the shuttle classes (vehicle=%s itemType=%s)", tostring(alive(vehicle)), tostring(alive(itemType)))
+        return "could not find the shuttle classes"
+    end
+    local loc = astro:K2_GetActorLocation()
+    local yaw = astro:K2_GetActorRotation().Yaw
+    local rad = math.rad(yaw)
+    local half = rad / 2
+    local transform = {
+        Rotation = { X = 0, Y = 0, Z = math.sin(half), W = math.cos(half) },
+        Translation = { X = loc.X + math.cos(rad) * 900, Y = loc.Y + math.sin(rad) * 900, Z = loc.Z + 150 },
+        Scale3D = { X = 1, Y = 1, Z = 1 },
+    }
+    local ok, err = pcall(function() pc:ServerSpawnActorAndAttemptPackage(vehicle, transform, itemType, true, false) end)
+    say("spawnshuttle ready: ServerSpawnActorAndAttemptPackage %s", ok and "sent" or tostring(err))
+    if not ok then return "the game's spawn function failed (details in the log)" end
+    return "asked the game for a complete shuttle in front of you. If nothing appears, use spawnshuttle parts"
+end
+
 -- ===== Chat =====
 -- Uses the game's own network channels, no outside service:
 --   client -> host : the engine RPC PlayerController:ServerExec carrying "CCHAT <text>". It does nothing in a shipping
@@ -947,7 +973,11 @@ local function runChatCommand(pc, text)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
         local args = (text:match("^/%S+%s+(.*)$") or ""):lower()
         local size = args:find("xl", 1, true) and "xl" or "normal"
-        replyTo(pc, "[Server] " .. spawnShuttle(pawn, size, args:find("parts", 1, true) ~= nil))
+        if args:find("ready", 1, true) then
+            replyTo(pc, "[Server] " .. spawnReadyShuttle(pc, pawn))
+        else
+            replyTo(pc, "[Server] " .. spawnShuttle(pawn, size, args:find("parts", 1, true) ~= nil))
+        end
     elseif cmd == "tptoshuttle" then
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
