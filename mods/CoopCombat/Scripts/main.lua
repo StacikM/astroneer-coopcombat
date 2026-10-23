@@ -653,51 +653,58 @@ end
 
 -- Teleport a player next to the shuttle nearest to them. The host does this to the player's character.
 -- Returns a short message for the player.
--- The personal shuttle (the one you fly to other planets with) is tried first; other shuttles only if none exists.
-local PERSONAL_SHUTTLE = { "BP_PersonalBeepyShuttle_C" }
-local OTHER_SHUTTLES = { "Shuttle", "Shuttle_C", "Shuttle_Large_C", "Dropship_C" }
-
--- the nearest live actor of any of these classes to a point
-local function nearestOf(classNames, from)
-    local best, bestDist, bestName = nil, math.huge, ""
-    local seen = {}
-    for _, className in ipairs(classNames) do
-        local list = FindAllOf(className)
-        if type(list) == "table" then
-            for i = 1, #list do
-                pcall(function()
-                    local s = list[i]
-                    local addr = s:GetAddress()
-                    if seen[addr] or not s:IsValid() then return end
-                    seen[addr] = true
-                    local name = s:GetFullName()
-                    if name:find("Default__", 1, true) or name:find("_GEN_VARIABLE", 1, true) then return end
-                    local l = s:K2_GetActorLocation()
-                    local d = math.sqrt((l.X - from.X) ^ 2 + (l.Y - from.Y) ^ 2 + (l.Z - from.Z) ^ 2)
-                    if d < bestDist then best, bestDist, bestName = s, d, name end
-                end)
-            end
+-- Every shuttle-like actor in the world, personal shuttle first, then nearest first. Class names are unreliable (an item
+-- type and the vehicle are both called "Shuttle_C"), so this scans all actors and goes by the class part of their name.
+local function findShuttles(from)
+    local found = {}
+    local scanned = 0
+    local skip = { "wrecked", "panel", "platform", "display", "camera", "spawner", "beacon", "door", "lid", "slot", "anim" }
+    local actors = FindAllOf("Actor")
+    if type(actors) == "table" then
+        for i = 1, #actors do
+            pcall(function()
+                local a = actors[i]
+                scanned = scanned + 1
+                local full = a:GetFullName()
+                local class = full:match("^(%S+)") or ""
+                local lower = class:lower()
+                if not (lower:find("shuttle", 1, true) or lower:find("dropship", 1, true)) then return end
+                if full:find("Default__", 1, true) or full:find("_GEN_VARIABLE", 1, true) then return end
+                for _, word in ipairs(skip) do
+                    if lower:find(word, 1, true) then return end
+                end
+                local l = a:K2_GetActorLocation()
+                local d = math.sqrt((l.X - from.X) ^ 2 + (l.Y - from.Y) ^ 2 + (l.Z - from.Z) ^ 2)
+                table.insert(found, { actor = a, dist = d, class = class, personal = lower:find("personal", 1, true) ~= nil })
+            end)
         end
     end
-    return best, bestDist, bestName
+    table.sort(found, function(x, y)
+        if x.personal ~= y.personal then return x.personal end
+        return x.dist < y.dist
+    end)
+    say("tptoshuttle: scanned %d actors, %d shuttle-like candidates", scanned, #found)
+    for i = 1, math.min(#found, 6) do
+        say("tptoshuttle: candidate %s, %.0f m away", found[i].class, found[i].dist / 100)
+    end
+    return found
 end
 
 local function tpToShuttle(astro)
     crumb("tpToShuttle")
     local from = astro:K2_GetActorLocation()
-    local best, bestDist, bestName = nearestOf(PERSONAL_SHUTTLE, from)
-    if not best then best, bestDist, bestName = nearestOf(OTHER_SHUTTLES, from) end
-    if not best then
+    local pick = findShuttles(from)[1]
+    if not pick then
         say("tptoshuttle: no shuttle found")
         return "no shuttle found in this world"
     end
-    local l = best:K2_GetActorLocation()
+    local l = pick.actor:K2_GetActorLocation()
     local target = { X = l.X + 250, Y = l.Y, Z = l.Z + 300 }
-    say("tptoshuttle: %s is %.0f m away, teleporting to it", bestName, bestDist / 100)
+    say("tptoshuttle: going to %s, %.0f m away", pick.class, pick.dist / 100)
     local ok, err = pcall(function() astro:K2_SetActorLocation(target, false, {}, true) end)
     if not ok then say("tptoshuttle error: %s", tostring(err)) return "teleport failed" end
     pcall(function() astro.AstroMovementComponent:ZeroVelocity() end)
-    return string.format("teleported next to a shuttle (%.0f m away)", bestDist / 100)
+    return string.format("teleported next to %s (%.0f m away)", pick.class, pick.dist / 100)
 end
 
 -- ===== Chat =====
