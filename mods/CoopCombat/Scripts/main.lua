@@ -894,8 +894,27 @@ local function probe()
         local mv = me.AstroMovementComponent
         say("probe: movement mode %s, speed %.0f, gravity %.0f", tostring(mv.CurrentMovementMode), mv.MaxSpeed, mv.Gravity)
     end)
-    -- (the overlap queries were removed: they hand the game an array as a plain table, which is risky)
-    addChatLine("[Probe] details written to UE4SS.log")
+    -- everything within 80 m of you, nearest first: whatever forms the wall should be in this list
+    local near = {}
+    local actors = FindAllOf("Actor")
+    if type(actors) == "table" then
+        for i = 1, #actors do
+            pcall(function()
+                local a = actors[i]
+                local full = a:GetFullName()
+                if full:find("Default__", 1, true) then return end
+                local l = a:K2_GetActorLocation()
+                local d = math.sqrt((l.X - loc.X) ^ 2 + (l.Y - loc.Y) ^ 2 + (l.Z - loc.Z) ^ 2)
+                if d < 8000 then table.insert(near, { class = full:match("^(%S+)") or "?", d = d }) end
+            end)
+        end
+    end
+    table.sort(near, function(x, y) return x.d < y.d end)
+    say("probe: %d actors within 80 m of you", #near)
+    for i = 1, math.min(#near, 60) do
+        say("probe: near #%d %s at %.0f", i, near[i].class, near[i].d)
+    end
+    addChatLine(string.format("[Probe] %d actors near you, listed in UE4SS.log", #near))
 end
 
 -- /hardness used to call the game's "ignore terrain hardness" function on every terrain tool in the world. That crashed
