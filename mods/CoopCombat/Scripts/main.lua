@@ -1061,6 +1061,9 @@ local function showMissions(filter)
     local m = missionsManager()
     if not m then addChatLine("[Missions] no missions manager found") return end
     filter = (filter or ""):lower()
+    local okInit, initialized = pcall(function() return m.bMissionsIntitialized end)
+    local okDis, disabled = pcall(function() return m.bMissionsDisabled end)
+    say("missions: disabled=%s initialized=%s", tostring(okDis and disabled or "unknown"), tostring(okInit and initialized or "unknown"))
     local state = {}
     pcall(function()
         local ids = m:GetActiveMissionIds()
