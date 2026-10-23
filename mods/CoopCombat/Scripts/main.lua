@@ -1063,25 +1063,24 @@ local function showMissions(filter)
     filter = (filter or ""):lower()
     local okInit, initialized = pcall(function() return m.bMissionsIntitialized end)
     local okDis, disabled = pcall(function() return m.bMissionsDisabled end)
-    say("missions: disabled=%s initialized=%s", tostring(okDis and disabled or "unknown"), tostring(okInit and initialized or "unknown"))
+    say("missions: disabled=%s initialized=%s", okDis and tostring(disabled) or "unknown", okInit and tostring(initialized) or "unknown")
+    -- the manager keeps its data in properties: AllMissions (a map of id -> mission), ActiveMissions, CompletedMissions
     local state = {}
     pcall(function()
-        local ids = m:GetActiveMissionIds()
-        for i = 1, #ids do state[ids[i]:ToString():lower()] = "active" end
+        local arr = m.ActiveMissions
+        for i = 1, #arr do state[arr[i].missionId:ToString():lower()] = "active" end
     end)
     pcall(function()
-        local ids = m:GetCompletedMissionIds()
-        for i = 1, #ids do state[ids[i]:ToString():lower()] = "done" end
+        local arr = m.CompletedMissions
+        for i = 1, #arr do state[arr[i].missionId:ToString():lower()] = "done" end
     end)
     local shown, total = 0, 0
     local ok, err = pcall(function()
-        local all = m:GetAllMissions()
-        for i = 1, #all do
+        m.AllMissions:ForEach(function(key, value)
             pcall(function()
-                local e = all[i]
-                local id = e.missionId:ToString()
+                local id = key:get():ToString()
                 local title = ""
-                pcall(function() title = e.Title:ToString() end)
+                pcall(function() title = value:get().Title:ToString() end)
                 total = total + 1
                 local st = state[id:lower()] or "locked"
                 say("mission: %s | %s | %s", id, title, st)
@@ -1092,7 +1091,7 @@ local function showMissions(filter)
                     shown = shown + 1
                 end
             end)
-        end
+        end)
     end)
     if not ok then say("missions error: %s", tostring(err)) end
     addChatLine(string.format("[Missions] %d of %d match (all are listed in UE4SS.log)", shown, total))
