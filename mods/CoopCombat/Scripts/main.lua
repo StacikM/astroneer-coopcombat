@@ -807,14 +807,23 @@ local function spawnSatellite(astro)
     return worked and "something was spawned about 50 m in front of you (look around for it)" or "the spawn failed (details in the log)"
 end
 
--- /spawnshuttle [xl]: a shuttle appears in front of the player. The host spawns it so it exists for everyone.
+-- /spawnshuttle [medium|xl] [parts|ready]: a shuttle appears in front of the player. The host spawns it so it exists for
+-- everyone. Which vehicle is which (from the slots each one has): the Small Shuttle is Shuttle_T2_ThrusterSlot (it has a
+-- single "ThrusterSlot", the tooltip says "requires thruster"); /Game/Vehicles/Shuttle has two fuel slots and a chassis
+-- slot, that is the Medium Shuttle. Small is the default.
 local SHUTTLE_VEHICLES = {
-    normal = "/Game/Vehicles/Shuttle.Shuttle_C",
+    small = "/Game/Vehicles/Shuttle_T2_ThrusterSlot.Shuttle_T2_ThrusterSlot_C",
+    medium = "/Game/Vehicles/Shuttle.Shuttle_C",
     xl = "/Game/Vehicles/Shuttle_XLarge.Shuttle_XLarge_C",
+}
+-- the matching item type, for the game's own spawn function
+local SHUTTLE_ITEMTYPES = {
+    small = "/Game/Items/ItemTypes/Components/Shuttle_T2_ThrusterSlot.Shuttle_T2_ThrusterSlot_C",
+    medium = "/Game/Items/ItemTypes/Components/Shuttle.Shuttle_C",
 }
 local function spawnShuttle(astro, size, withParts)
     crumb("spawnShuttle")
-    local path = SHUTTLE_VEHICLES[size] or SHUTTLE_VEHICLES.normal
+    local path = SHUTTLE_VEHICLES[size] or SHUTTLE_VEHICLES.small
     local world = astro:GetWorld()
     local class = StaticFindObject(path)
     if not alive(world) or not alive(class) then
@@ -830,13 +839,13 @@ local function spawnShuttle(astro, size, withParts)
     say("spawnshuttle: %s at 9 m in front of the player (%s)", path, worked and "spawned" or "spawn failed")
     if not worked then return "the shuttle could not be spawned" end
     if not withParts then return "a shuttle was spawned about 9 m in front of you" end
-    -- loose parts next to it: two medium thrusters (they go into the two medium slots of the thruster module).
-    -- The module itself and attaching parts to slots needs the game's slot system, which isn't safe to drive from here.
+    -- loose parts next to it: a medium thruster for the small shuttle (it has one thruster slot), two for the others.
+    -- Attaching parts to slots needs the game's slot system, which isn't safe to drive from here.
     local thrusterClass = StaticFindObject("/Game/Components_Medium/Thruster_Medium.Thruster_Medium_C")
     local spawned = 0
     if alive(thrusterClass) then
         local side = rad + math.pi / 2
-        for i = 1, 2 do
+        for i = 1, (size == "small") and 1 or 2 do
             local offset = (i == 1) and 350 or -350
             local ppos = { X = pos.X + math.cos(side) * offset, Y = pos.Y + math.sin(side) * offset, Z = pos.Z + 100 }
             local okp, p = pcall(function() return world:SpawnActor(thrusterClass, ppos, { Pitch = 0, Yaw = yaw, Roll = 0 }) end)
@@ -871,10 +880,11 @@ end
 -- /spawnshuttle ready: ask the game's own item-spawning function (the one the creative catalog uses) for a Small Shuttle,
 -- instead of spawning a bare chassis myself. It is called on the sender's player controller on the host. If the game
 -- refuses (for example outside creative mode) nothing appears; "spawnshuttle parts" is the fallback.
-local function spawnReadyShuttle(pc, astro)
+local function spawnReadyShuttle(pc, astro, size)
     crumb("spawnReadyShuttle")
-    local vehicle = StaticFindObject("/Game/Vehicles/Shuttle.Shuttle_C")
-    local itemType = StaticFindObject("/Game/Items/ItemTypes/Components/Shuttle.Shuttle_C")
+    size = SHUTTLE_ITEMTYPES[size] and size or "small"
+    local vehicle = StaticFindObject(SHUTTLE_VEHICLES[size])
+    local itemType = StaticFindObject(SHUTTLE_ITEMTYPES[size])
     if not alive(vehicle) or not alive(itemType) then
         say("spawnshuttle ready: could not find the shuttle classes (vehicle=%s itemType=%s)", tostring(alive(vehicle)), tostring(alive(itemType)))
         return "could not find the shuttle classes"
@@ -972,9 +982,9 @@ local function runChatCommand(pc, text)
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
         local args = (text:match("^/%S+%s+(.*)$") or ""):lower()
-        local size = args:find("xl", 1, true) and "xl" or "normal"
+        local size = args:find("xl", 1, true) and "xl" or (args:find("medium", 1, true) and "medium" or "small")
         if args:find("ready", 1, true) then
-            replyTo(pc, "[Server] " .. spawnReadyShuttle(pc, pawn))
+            replyTo(pc, "[Server] " .. spawnReadyShuttle(pc, pawn, size))
         else
             replyTo(pc, "[Server] " .. spawnShuttle(pawn, size, args:find("parts", 1, true) ~= nil))
         end
