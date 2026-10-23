@@ -1034,7 +1034,39 @@ local function applyBarriers(off)
         end
         changed = changed + 1
     end)
-    say("barriers %s (%d components changed)", off and "removed" or "restored", changed)
+    -- The planet core: every planet has a Gateway Engine at its centre, and the engine has a mesh component called
+    -- "Entry Barrier Shell". That is the invisible wall around the core. Its collision is what blocks you.
+    local engines = FindAllOf("Actor")
+    local shells = 0
+    if type(engines) == "table" then
+        for i = 1, #engines do
+            pcall(function()
+                local a = engines[i]
+                local full = a:GetFullName()
+                local class = full:match("^(%S+)") or ""
+                if not class:find("GatewayEngine_", 1, true) or full:find("Default__", 1, true) then return end
+                local shell = a["Entry Barrier Shell"]
+                if shell == nil or not shell:IsValid() then
+                    say("barrier: %s has no readable Entry Barrier Shell", class)
+                    return
+                end
+                local key = "g" .. shell:GetAddress()
+                if off then
+                    if barrierSaved[key] == nil then
+                        barrierSaved[key] = { shell:GetCollisionEnabled() }
+                        say("barrier: %s Entry Barrier Shell collision was %s", class, tostring(barrierSaved[key][1]))
+                    end
+                    shell:SetCollisionEnabled(0) -- no collision
+                elseif barrierSaved[key] then
+                    shell:SetCollisionEnabled(barrierSaved[key][1])
+                    barrierSaved[key] = nil
+                end
+                shells = shells + 1
+            end)
+        end
+    end
+    changed = changed + shells
+    say("barriers %s (%d components changed, %d core barrier shells)", off and "removed" or "restored", changed, shells)
 end
 
 local function handleEvt(text)
