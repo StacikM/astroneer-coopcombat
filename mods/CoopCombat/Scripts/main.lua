@@ -699,6 +699,70 @@ local function tpToShuttle(astro, needles, what)
     return string.format("teleported next to %s (%.0f m away)", pick.class, pick.dist / 100)
 end
 
+-- Every planet, station and platform in the world with the name the game shows for it. The first word of the class name
+-- (T2_Planet_Terran_C -> Terran) is the id, the text the game shows (Sylva, Novus...) is the display name.
+local function listBodies()
+    local out = {}
+    local seen = {}
+    for _, className in ipairs({ "AstroPlanet", "GateStation", "OrbitalPlatform" }) do
+        local list = FindAllOf(className)
+        if type(list) == "table" then
+            for i = 1, #list do
+                pcall(function()
+                    local b = list[i]
+                    local full = b:GetFullName()
+                    if full:find("Default__", 1, true) then return end
+                    local addr = b:GetAddress()
+                    if seen[addr] then return end
+                    seen[addr] = true
+                    local class = full:match("^(%S+)") or "?"
+                    local id = class:gsub("^T2_Planet_", ""):gsub("_C$", "")
+                    local display = ""
+                    pcall(function() display = b.Name:ToString() end)
+                    local c = b:GetCenter()
+                    local radius = 0
+                    pcall(function() radius = b:GetRadius() end)
+                    if type(radius) ~= "number" or radius <= 0 then radius = 0 end
+                    table.insert(out, {
+                        body = b, id = id, display = display, class = class, radius = radius,
+                        center = { X = c.X, Y = c.Y, Z = c.Z },
+                    })
+                end)
+            end
+        end
+    end
+    table.sort(out, function(x, y) return x.id < y.id end)
+    return out
+end
+
+-- /tpplanet <number or name>: put the player above that planet (or next to that station)
+local function tpToBody(astro, query)
+    crumb("tpToBody")
+    local bodies = listBodies()
+    local pick
+    local q = (query or ""):lower()
+    local n = tonumber(q)
+    if n then
+        pick = bodies[n]
+    elseif q ~= "" then
+        for _, b in ipairs(bodies) do
+            if b.id:lower():find(q, 1, true) or b.display:lower():find(q, 1, true) or b.class:lower():find(q, 1, true) then
+                pick = b
+                break
+            end
+        end
+    end
+    if not pick then return "no planet matches '" .. (query or "") .. "'. Type planets to see the list" end
+    local altitude = (pick.radius > 0) and (pick.radius + 4000) or 1500
+    local target = { X = pick.center.X, Y = pick.center.Y, Z = pick.center.Z + altitude }
+    say("tpplanet: going to %s (%s), radius %.0f", pick.id, pick.display, pick.radius)
+    local ok, err = pcall(function() astro:K2_TeleportTo(target, astro:K2_GetActorRotation()) end)
+    if not ok then say("tpplanet error: %s", tostring(err)) return "teleport failed" end
+    pcall(function() astro:AuthoritySetLocalSolarBody(pick.body) end)
+    pcall(function() astro.AstroMovementComponent:ZeroVelocity() end)
+    return "teleported above " .. pick.id .. (pick.display ~= "" and (" (" .. pick.display .. ")") or "")
+end
+
 -- /spawnshuttle [xl]: a shuttle appears in front of the player. The host spawns it so it exists for everyone.
 local SHUTTLE_VEHICLES = {
     normal = "/Game/Vehicles/Shuttle.Shuttle_C",
@@ -845,6 +909,10 @@ local function runChatCommand(pc, text)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
         local msg = tpToShuttle(pawn)
         replyTo(pc, "[Server] " .. msg)
+    elseif cmd == "tpplanet" then
+        local pawn = pawnOf(pc)
+        if not pawn then replyTo(pc, "[Server] you have no character right now") return end
+        replyTo(pc, "[Server] " .. tpToBody(pawn, text:match("^/%S+%s+(.*)$")))
     elseif cmd == "tptodropship" then
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
@@ -862,7 +930,7 @@ local function runChatCommand(pc, text)
         pcall(feed, "world barriers restored")
         replyTo(pc, "[Server] barriers restored.")
     else
-        replyTo(pc, "[Server] unknown command. Try givemegun, tptodropship, spawndropship, spawnshuttle or nobarrier")
+        replyTo(pc, "[Server] unknown command. Try givemegun, planets, tpplanet, spawnshuttle or nobarrier")
     end
 end
 
@@ -925,7 +993,24 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true }
+
+-- /planets: shows every planet and station with its number and the name the game uses. Runs on your own PC.
+local function showPlanets()
+    local bodies = listBodies()
+    if #bodies == 0 then addChatLine("[Planets] none found") return end
+    local row = {}
+    for i, b in ipairs(bodies) do
+        local label = string.format("%d=%s%s", i, b.id, b.display ~= "" and (" (" .. b.display .. ")") or "")
+        say("planets: %s", label)
+        table.insert(row, label)
+        if #row == 2 or i == #bodies then
+            addChatLine("[Planets] " .. table.concat(row, ", "))
+            row = {}
+        end
+    end
+    addChatLine("[Planets] type tpplanet <number or name> to go there")
+end
 
 local function sendChat(text)
     text = cleanChat(text)
@@ -936,6 +1021,7 @@ local function sendChat(text)
         lowered = "/" .. lowered
     end
     if lowered == "/probe" then pcall(probe) return end
+    if lowered == "/planets" then pcall(showPlanets) return end
     if lowered == "/hardness" then pcall(ignoreHardness) return end
     if os.clock() - chat.lastSent < 0.5 then return end
     chat.lastSent = os.clock()
@@ -1140,7 +1226,7 @@ local function getInputBox(hud)
         if found ~= nil and found:IsValid() then return found end
     end
     local box = StaticConstructObject(StaticFindObject("/Script/UMG.EditableTextBox"), tree, FName("CoopChatInput"))
-    box:SetHintText(FText("Type a message or a command (givemegun, tptodropship, spawndropship), Enter to send"))
+    box:SetHintText(FText("Type a message or a command (givemegun, planets, tpplanet, spawnshuttle), Enter to send"))
     local slot = tree.RootWidget:AddChild(box)
     slot:SetAnchors({ Minimum = { X = 0.02, Y = 0.8 }, Maximum = { X = 0.02, Y = 0.8 } })
     slot:SetAlignment({ X = 0, Y = 0.5 })
