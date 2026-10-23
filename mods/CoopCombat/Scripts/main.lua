@@ -803,10 +803,17 @@ local function ignoreHardness()
     addChatLine(string.format("[Hardness] %d terrain tool(s) set to ignore hardness (creative mode only)", n))
 end
 
+-- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true }
+
 local function sendChat(text)
     text = cleanChat(text)
     if text == "" then return end
     local lowered = text:lower()
+    if COMMAND_NAMES[lowered] then
+        text = "/" .. text
+        lowered = "/" .. lowered
+    end
     if lowered == "/probe" then pcall(probe) return end
     if lowered == "/hardness" then pcall(ignoreHardness) return end
     if os.clock() - chat.lastSent < 0.5 then return end
@@ -980,7 +987,7 @@ local function getInputBox(hud)
         if found ~= nil and found:IsValid() then return found end
     end
     local box = StaticConstructObject(StaticFindObject("/Script/UMG.EditableTextBox"), tree, FName("CoopChatInput"))
-    box:SetHintText(FText("Type a message, Enter to send"))
+    box:SetHintText(FText("Type a message or a command (givemegun, probe, hardness, nobarrier), Enter to send"))
     local slot = tree.RootWidget:AddChild(box)
     slot:SetAnchors({ Minimum = { X = 0.02, Y = 0.8 }, Maximum = { X = 0.02, Y = 0.8 } })
     slot:SetAlignment({ X = 0, Y = 0.5 })
@@ -1158,13 +1165,26 @@ local DIGIT_NAMES = { "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEV
 local DIGIT_SHIFT = { ")", "!", "@", "#", "$", "%", "^", "&", "*", "(" }
 for i = 1, 10 do TYPE_KEYS[DIGIT_NAMES[i]] = { tostring(i - 1), DIGIT_SHIFT[i] } end
 TYPE_KEYS.SPACE = { " ", " " }
-TYPE_KEYS.COMMA = { ",", "<" }
-TYPE_KEYS.PERIOD = { ".", ">" }
-TYPE_KEYS.SLASH = { "/", "?" }
-TYPE_KEYS.HYPHEN = { "-", "_" }
-TYPE_KEYS.EQUALS = { "=", "+" }
-TYPE_KEYS.SEMICOLON = { ";", ":" }
-TYPE_KEYS.QUOTE = { "'", '"' }
+-- punctuation uses UE4SS's own key names; the characters assume a US layout, other layouts print what a US layout
+-- would on that physical key. The numpad keys are the same on every layout, so numpad "/" always types a slash.
+TYPE_KEYS.OEM_COMMA = { ",", "<" }
+TYPE_KEYS.OEM_PERIOD = { ".", ">" }
+TYPE_KEYS.OEM_MINUS = { "-", "_" }
+TYPE_KEYS.OEM_PLUS = { "=", "+" }
+TYPE_KEYS.OEM_ONE = { ";", ":" }
+TYPE_KEYS.OEM_TWO = { "/", "?" }
+TYPE_KEYS.OEM_THREE = { "`", "~" }
+TYPE_KEYS.OEM_FOUR = { "[", "{" }
+TYPE_KEYS.OEM_FIVE = { "\\", "|" }
+TYPE_KEYS.OEM_SIX = { "]", "}" }
+TYPE_KEYS.OEM_SEVEN = { "'", '"' }
+TYPE_KEYS.DIVIDE = { "/", "/" }
+TYPE_KEYS.MULTIPLY = { "*", "*" }
+TYPE_KEYS.ADD = { "+", "+" }
+TYPE_KEYS.SUBTRACT = { "-", "-" }
+TYPE_KEYS.DECIMAL = { ".", "." }
+local NUMPAD_NAMES = { "NUM_ZERO", "NUM_ONE", "NUM_TWO", "NUM_THREE", "NUM_FOUR", "NUM_FIVE", "NUM_SIX", "NUM_SEVEN", "NUM_EIGHT", "NUM_NINE" }
+for i = 1, 10 do TYPE_KEYS[NUMPAD_NAMES[i]] = { tostring(i - 1), tostring(i - 1) } end
 
 local function shiftDown()
     if IsKeyBindDown == nil then return false end
