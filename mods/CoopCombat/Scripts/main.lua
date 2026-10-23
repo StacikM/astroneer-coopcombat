@@ -763,6 +763,48 @@ local function tpToBody(astro, query)
     return "teleported above " .. pick.id .. (pick.display ~= "" and (" (" .. pick.display .. ")") or "")
 end
 
+-- /spawnsatellite (experimental): the end-game "unidentified satellite" only exists during its mission, so it isn't in the
+-- world. The game files have /Game/Story/EXO_Satellite (next to Landing_Locations). This loads that asset, logs what it
+-- is, and spawns it in front of the player only if it is an actor. It may not be the satellite, or may not work outside
+-- its mission; everything it finds is logged.
+local function spawnSatellite(astro)
+    crumb("spawnSatellite")
+    local path = "/Game/Story/EXO_Satellite"
+    if LoadAsset == nil then return "this UE4SS version cannot load assets on demand" end
+    local okLoad, errLoad = pcall(function() LoadAsset(path) end)
+    say("satellite: LoadAsset %s (%s)", path, okLoad and "ok" or tostring(errLoad))
+    local class = StaticFindObject(path .. ".EXO_Satellite_C")
+    if not alive(class) then
+        local asset = StaticFindObject(path .. ".EXO_Satellite")
+        say("satellite: no EXO_Satellite_C class; asset object: %s", alive(asset) and asset:GetFullName() or "none")
+        return "the asset loaded but has no spawnable class (details in the log)"
+    end
+    -- walk up the parent classes: only spawn it if one of them is an Actor
+    local isActor, chain = false, {}
+    pcall(function()
+        local c = class
+        for _ = 1, 10 do
+            c = c:GetSuperStruct()
+            if c == nil or not c:IsValid() then break end
+            local name = c:GetFullName()
+            table.insert(chain, name)
+            if name:find("/Script/Engine.Actor", 1, true) then isActor = true end
+        end
+    end)
+    say("satellite: class %s, parents: %s", class:GetFullName(), table.concat(chain, " > "))
+    if not isActor then return "it isn't an actor, so it can't be spawned (details in the log)" end
+    local world = astro:GetWorld()
+    if not alive(world) then return "no world to spawn into" end
+    local loc = astro:K2_GetActorLocation()
+    local yaw = astro:K2_GetActorRotation().Yaw
+    local rad = math.rad(yaw)
+    local pos = { X = loc.X + math.cos(rad) * 5000, Y = loc.Y + math.sin(rad) * 5000, Z = loc.Z + 1500 }
+    local ok, a = pcall(function() return world:SpawnActor(class, pos, { Pitch = 0, Yaw = yaw, Roll = 0 }) end)
+    local worked = ok and alive(a)
+    say("satellite: spawn %s", worked and "worked" or "failed")
+    return worked and "something was spawned about 50 m in front of you (look around for it)" or "the spawn failed (details in the log)"
+end
+
 -- /spawnshuttle [xl]: a shuttle appears in front of the player. The host spawns it so it exists for everyone.
 local SHUTTLE_VEHICLES = {
     normal = "/Game/Vehicles/Shuttle.Shuttle_C",
@@ -909,6 +951,10 @@ local function runChatCommand(pc, text)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
         local msg = tpToShuttle(pawn)
         replyTo(pc, "[Server] " .. msg)
+    elseif cmd == "spawnsatellite" then
+        local pawn = pawnOf(pc)
+        if not pawn then replyTo(pc, "[Server] you have no character right now") return end
+        replyTo(pc, "[Server] " .. spawnSatellite(pawn))
     elseif cmd == "tpplanet" then
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
@@ -993,7 +1039,7 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true }
 
 -- /planets: shows every planet and station with its number and the name the game uses. Runs on your own PC.
 local function showPlanets()
