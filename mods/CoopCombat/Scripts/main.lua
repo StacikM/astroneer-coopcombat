@@ -1046,7 +1046,7 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true, enablemissions = true, disablemissions = true, layout = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true, enablemissions = true, disablemissions = true, layout = true, missioninfo = true }
 
 -- Missions. The game has a missions manager actor with its own list of every mission, and functions to activate or
 -- complete one. Mission ids are names (FNames, case does not matter).
@@ -1096,6 +1096,63 @@ local function showMissions(filter)
     end)
     if not ok then say("missions error: %s", tostring(err)) end
     addChatLine(string.format("[Missions] %d of %d match (all are listed in UE4SS.log)", shown, total))
+end
+
+local OBJECTIVE_TYPES = {
+    [0] = "HarvestResource", "PrintItem", "SlotItem", "CreateItem", "PowerItem", "FullyChargeItem", "FillItem",
+    "PlanetFall", "FindGateChamber", "ActivateGateChamber", "FindGateEngine", "ActivateGateEngine", "Custom",
+    "ConnectToPower", "SlottedByAutoArm", "ItemPlaced", "PuzzleSolved", "CatalogUnlock", "BytesReached",
+    "ResearchCompleted", "ItemUsed", "ItemExists", "ConnectToOxygen", "SlotInDeformTool", "ExplodeItem", "DrainItem",
+    "ConsumeItem", "ItemPickedUp", "ItemDoesntExist", "RailPostConnection", "BeginLTE", "AutoComplete", "None",
+    "SplineConnection",
+}
+
+-- /missioninfo <id>: what a mission asks for (steps, planets, tags) and what comes before and after it. Read-only, local.
+local function showMissionInfo(id)
+    crumb("showMissionInfo")
+    local m = missionsManager()
+    if not m then addChatLine("[Mission] no missions manager found") return end
+    id = (id or ""):lower()
+    if id == "" then addChatLine("[Mission] type missioninfo <id>, for example missioninfo mission_2-4") return end
+    local found = false
+    local ok, err = pcall(function()
+        m.AllMissions:ForEach(function(key, value)
+            pcall(function()
+                if found or key:get():ToString():lower() ~= id then return end
+                found = true
+                local d = value:get()
+                local title, desc = "", ""
+                pcall(function() title = d.Title:ToString() end)
+                pcall(function() desc = d.Decription:ToString() end)
+                say("missioninfo: %s - %s", key:get():ToString(), title)
+                say("missioninfo: description: %s", desc)
+                local before, after = {}, {}
+                pcall(function() for i = 1, #d.PrerequisitMissions do table.insert(before, d.PrerequisitMissions[i]:ToString()) end end)
+                pcall(function() for i = 1, #d.NextMissions do table.insert(after, d.NextMissions[i]:ToString()) end end)
+                say("missioninfo: needs first: %s | unlocks: %s", table.concat(before, ", "), table.concat(after, ", "))
+                addChatLine(string.format("[Mission] %s - needs: %s", title, #before > 0 and table.concat(before, ", ") or "nothing"))
+                local objs = d.Objectives
+                for i = 1, #objs do
+                    pcall(function()
+                        local o = objs[i]
+                        local text = ""
+                        pcall(function() text = o.Description:ToString() end)
+                        local tname = OBJECTIVE_TYPES[o.ObjectiveType] or tostring(o.ObjectiveType)
+                        local tag = ""
+                        pcall(function() tag = o.CustomTag:ToString() end)
+                        say("missioninfo: step %d: [%s] %s | planet=%s tag=%s value=%s hidden=%s optional=%s", i, tname, text,
+                            tostring(o.Planet), tag, tostring(o.Value), tostring(o.bIsHiddenObjective), tostring(o.bIsOptional))
+                        if i <= 5 then
+                            addChatLine(string.format("[Mission] step %d: %s - %s", i, tname, text))
+                        end
+                    end)
+                end
+            end)
+        end)
+    end)
+    if not ok then say("missioninfo error: %s", tostring(err)) end
+    if not found then addChatLine("[Mission] no mission with that id") end
+    addChatLine("[Mission] full details are in UE4SS.log")
 end
 
 -- /startmission <id> and /completemission <id>: ask the game to activate or complete a mission. Host only.
@@ -1184,6 +1241,7 @@ local function sendChat(text)
         end
         return
     end
+    if lowered:find("^/missioninfo") then pcall(showMissionInfo, text:match("^/%S+%s+(%S+)")) return end
     if lowered:find("^/missions") then pcall(showMissions, text:match("^/%S+%s+(.*)$")) return end
     if lowered == "/hardness" then pcall(ignoreHardness) return end
     if os.clock() - chat.lastSent < 0.5 then return end
