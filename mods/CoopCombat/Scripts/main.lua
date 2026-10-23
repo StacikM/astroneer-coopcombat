@@ -265,11 +265,6 @@ local function hudTick()
     pcall(chatTick)
 end
 
-LoopAsync(100, function()
-    ExecuteInGameThread(function() pcall(hudTick) end)
-    return false
-end)
-
 local function goDown(astro, by)
     crumb("goDown")
     local key = astro:GetAddress()
@@ -432,7 +427,7 @@ local function fallTick()
     end
     local speed = speedOf(mv)
     if not fall.armed then
-        if speed > minV * 0.7 then
+        if speed > minV * 0.5 then
             fall.armed, fall.peak = true, speed
             pcall(function() me:AuthoritySetIsImmuneToDamage(true, me) end)
         end
@@ -454,26 +449,16 @@ local function fallTick()
     end
 end
 
-LoopAsync(50, function()
-    ExecuteInGameThread(function() pcall(fallTick) end)
-    return false
-end)
-
 -- Natural damage (falls etc.) goes through native code, so catch it instead of replacing it.
--- 1) fast watcher: health about to hit zero -> downed instead
-LoopAsync(50, function()
-    ExecuteInGameThread(function()
-        pcall(function()
-            crumb("watcher")
-            local me = getLocalCached()
-            if me and not downed[me:GetAddress()] and not finalDeath[me:GetAddress()] and me.bIsAlive ~= 0 and me.Health <= 0.02 then
-                say("caught lethal health (%.3f)", me.Health)
-                goDown(me)
-            end
-        end)
-    end)
-    return false
-end)
+-- watcher: health about to hit zero -> downed instead
+local function watcherTick()
+    crumb("watcher")
+    local me = getLocalCached()
+    if me and not downed[me:GetAddress()] and not finalDeath[me:GetAddress()] and me.bIsAlive ~= 0 and me.Health <= 0.02 then
+        say("caught lethal health (%.3f)", me.Health)
+        goDown(me)
+    end
+end
 
 
 -- Explode: spawn EXPLODE_COUNT dynamite on the player and detonate them, in small batches to avoid a hitch.
@@ -1435,27 +1420,35 @@ local function runCommand(line)
     say("panel: %s", line)
 end
 
-LoopAsync(1000, function()
-    ExecuteInGameThread(function() pcall(writeState) end)
-    return false
-end)
-
-LoopAsync(400, function()
+-- reads the panel's commands.txt and runs the lines in it
+local function commandTick()
     local f = io.open(panelDir .. "commands.txt", "r")
-    if f then
-        local text = f:read("*a")
-        f:close()
-        if text and text ~= "" then
-            local w = io.open(panelDir .. "commands.txt", "w")
-            if w then w:close() end
-            ExecuteInGameThread(function()
-                for line in text:gmatch("[^\r\n]+") do
-                    local ok, err = pcall(runCommand, line)
-                    if not ok then say("panel command error: %s", tostring(err)) end
-                end
-            end)
-        end
+    if not f then return end
+    local text = f:read("*a")
+    f:close()
+    if not text or text == "" then return end
+    local w = io.open(panelDir .. "commands.txt", "w")
+    if w then w:close() end
+    for line in text:gmatch("[^\r\n]+") do
+        local ok, err = pcall(runCommand, line)
+        if not ok then say("panel command error: %s", tostring(err)) end
     end
+end
+
+-- ONE timer drives everything. Before, five separate timers each handed a new callback to the game thread (about 100
+-- a second); UE4SS logged "Ref was not function" errors under that load and crashed every few minutes.
+local tickCount = 0
+local function masterTick()
+    tickCount = tickCount + 1
+    pcall(hudTick)
+    pcall(fallTick)
+    pcall(watcherTick)
+    if tickCount % 4 == 0 then pcall(commandTick) end
+    if tickCount % 10 == 0 then pcall(writeState) end
+end
+
+LoopAsync(100, function()
+    ExecuteInGameThread(masterTick)
     return false
 end)
 
