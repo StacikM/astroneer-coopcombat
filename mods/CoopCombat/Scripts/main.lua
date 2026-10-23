@@ -708,6 +708,30 @@ local function tpToShuttle(astro)
     return string.format("teleported next to %s (%.0f m away)", pick.class, pick.dist / 100)
 end
 
+-- /spawnshuttle [xl]: a shuttle appears in front of the player. The host spawns it so it exists for everyone.
+local SHUTTLE_VEHICLES = {
+    normal = "/Game/Vehicles/Shuttle.Shuttle_C",
+    xl = "/Game/Vehicles/Shuttle_XLarge.Shuttle_XLarge_C",
+}
+local function spawnShuttle(astro, size)
+    crumb("spawnShuttle")
+    local path = SHUTTLE_VEHICLES[size] or SHUTTLE_VEHICLES.normal
+    local world = astro:GetWorld()
+    local class = StaticFindObject(path)
+    if not alive(world) or not alive(class) then
+        say("spawnshuttle: could not find %s", path)
+        return "could not find the shuttle class"
+    end
+    local loc = astro:K2_GetActorLocation()
+    local yaw = astro:K2_GetActorRotation().Yaw
+    local rad = math.rad(yaw)
+    local pos = { X = loc.X + math.cos(rad) * 900, Y = loc.Y + math.sin(rad) * 900, Z = loc.Z + 150 }
+    local ok, a = pcall(function() return world:SpawnActor(class, pos, { Pitch = 0, Yaw = yaw, Roll = 0 }) end)
+    local worked = ok and alive(a)
+    say("spawnshuttle: %s at 9 m in front of the player (%s)", path, worked and "spawned" or "spawn failed")
+    return worked and "a shuttle was spawned about 9 m in front of you" or "the shuttle could not be spawned"
+end
+
 -- ===== Chat =====
 -- Uses the game's own network channels, no outside service:
 --   client -> host : the engine RPC PlayerController:ServerExec carrying "CCHAT <text>". It does nothing in a shipping
@@ -782,6 +806,11 @@ local function runChatCommand(pc, text)
         giveGun(pawn)
         replyTo(pc, "[Server] a " .. GUN_ITEM .. " is next to you. Pick it up, hold it, and use the fire button.")
         pcall(feed, charName(pawn) .. " got a gun")
+    elseif cmd == "spawnshuttle" then
+        local pawn = pawnOf(pc)
+        if not pawn then replyTo(pc, "[Server] you have no character right now") return end
+        local size = (text:match("^/%S+%s+(%S+)") or ""):lower()
+        replyTo(pc, "[Server] " .. spawnShuttle(pawn, size))
     elseif cmd == "tptoshuttle" then
         local pawn = pawnOf(pc)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
@@ -796,7 +825,7 @@ local function runChatCommand(pc, text)
         pcall(feed, "world barriers restored")
         replyTo(pc, "[Server] barriers restored.")
     else
-        replyTo(pc, "[Server] unknown command. Try givemegun, tptoshuttle, nobarrier or barrier")
+        replyTo(pc, "[Server] unknown command. Try givemegun, spawnshuttle, tptoshuttle, nobarrier or barrier")
     end
 end
 
@@ -840,13 +869,13 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true }
 
 local function sendChat(text)
     text = cleanChat(text)
     if text == "" then return end
     local lowered = text:lower()
-    if COMMAND_NAMES[lowered] then
+    if COMMAND_NAMES[lowered:match("^(%S+)") or ""] then
         text = "/" .. text
         lowered = "/" .. lowered
     end
@@ -1023,7 +1052,7 @@ local function getInputBox(hud)
         if found ~= nil and found:IsValid() then return found end
     end
     local box = StaticConstructObject(StaticFindObject("/Script/UMG.EditableTextBox"), tree, FName("CoopChatInput"))
-    box:SetHintText(FText("Type a message or a command (givemegun, tptoshuttle, probe), Enter to send"))
+    box:SetHintText(FText("Type a message or a command (givemegun, spawnshuttle, tptoshuttle), Enter to send"))
     local slot = tree.RootWidget:AddChild(box)
     slot:SetAnchors({ Minimum = { X = 0.02, Y = 0.8 }, Maximum = { X = 0.02, Y = 0.8 } })
     slot:SetAlignment({ X = 0, Y = 0.5 })
