@@ -640,10 +640,11 @@ end
 -- Returns a short message for the player.
 -- Every shuttle-like actor in the world, personal shuttle first, then nearest first. Class names are unreliable (an item
 -- type and the vehicle are both called "Shuttle_C"), so this scans all actors and goes by the class part of their name.
-local function findShuttles(from)
+local function findShuttles(from, needles)
     local found = {}
     local scanned = 0
-    local skip = { "wrecked", "panel", "platform", "display", "camera", "spawner", "beacon", "door", "lid", "slot", "anim" }
+    needles = needles or { "shuttle", "dropship" }
+    local skip = { "wrecked", "panel", "platform", "display", "camera", "beacon", "door", "lid", "slot", "anim" }
     local actors = FindAllOf("Actor")
     if type(actors) == "table" then
         for i = 1, #actors do
@@ -653,7 +654,11 @@ local function findShuttles(from)
                 local full = a:GetFullName()
                 local class = full:match("^(%S+)") or ""
                 local lower = class:lower()
-                if not (lower:find("shuttle", 1, true) or lower:find("dropship", 1, true)) then return end
+                local matches = false
+                for _, needle in ipairs(needles) do
+                    if lower:find(needle, 1, true) then matches = true end
+                end
+                if not matches then return end
                 if full:find("Default__", 1, true) or full:find("_GEN_VARIABLE", 1, true) then return end
                 for _, word in ipairs(skip) do
                     if lower:find(word, 1, true) then return end
@@ -675,13 +680,14 @@ local function findShuttles(from)
     return found
 end
 
-local function tpToShuttle(astro)
+local function tpToShuttle(astro, needles, what)
     crumb("tpToShuttle")
+    what = what or "shuttle"
     local from = astro:K2_GetActorLocation()
-    local pick = findShuttles(from)[1]
+    local pick = findShuttles(from, needles)[1]
     if not pick then
-        say("tptoshuttle: no shuttle found")
-        return "no shuttle found in this world"
+        say("tp: no %s found", what)
+        return "no " .. what .. " found in this world"
     end
     local l = pick.actor:K2_GetActorLocation()
     local target = { X = l.X + 250, Y = l.Y, Z = l.Z + 300 }
@@ -731,6 +737,27 @@ local function spawnShuttle(astro, size, withParts)
     end
     say("spawnshuttle: %d medium thrusters spawned next to it", spawned)
     return string.format("a shuttle and %d medium thruster(s) were spawned in front of you", spawned)
+end
+
+-- /spawndropship: the base dropship (a physical item with its own thruster, seat and navigation) in front of the player.
+-- (The Dropship_ShelterSpawner variant is the starter ship that also spawns a shelter package, so it is not used.)
+local function spawnDropship(astro)
+    crumb("spawnDropship")
+    local path = "/Game/Components_Medium/Dropship.Dropship_C"
+    local world = astro:GetWorld()
+    local class = StaticFindObject(path)
+    if not alive(world) or not alive(class) then
+        say("spawndropship: could not find %s", path)
+        return "could not find the dropship class"
+    end
+    local loc = astro:K2_GetActorLocation()
+    local yaw = astro:K2_GetActorRotation().Yaw
+    local rad = math.rad(yaw)
+    local pos = { X = loc.X + math.cos(rad) * 900, Y = loc.Y + math.sin(rad) * 900, Z = loc.Z + 150 }
+    local ok, a = pcall(function() return world:SpawnActor(class, pos, { Pitch = 0, Yaw = yaw, Roll = 0 }) end)
+    local worked = ok and alive(a)
+    say("spawndropship: %s (%s)", path, worked and "spawned" or "spawn failed")
+    return worked and "a dropship was spawned about 9 m in front of you" or "the dropship could not be spawned"
 end
 
 -- ===== Chat =====
@@ -818,6 +845,14 @@ local function runChatCommand(pc, text)
         if not pawn then replyTo(pc, "[Server] you have no character right now") return end
         local msg = tpToShuttle(pawn)
         replyTo(pc, "[Server] " .. msg)
+    elseif cmd == "tptodropship" then
+        local pawn = pawnOf(pc)
+        if not pawn then replyTo(pc, "[Server] you have no character right now") return end
+        replyTo(pc, "[Server] " .. tpToShuttle(pawn, { "dropship" }, "dropship"))
+    elseif cmd == "spawndropship" then
+        local pawn = pawnOf(pc)
+        if not pawn then replyTo(pc, "[Server] you have no character right now") return end
+        replyTo(pc, "[Server] " .. spawnDropship(pawn))
     elseif cmd == "nobarrier" then
         sendEvt("BARRIER|0")
         pcall(feed, "world barriers removed")
@@ -827,7 +862,7 @@ local function runChatCommand(pc, text)
         pcall(feed, "world barriers restored")
         replyTo(pc, "[Server] barriers restored.")
     else
-        replyTo(pc, "[Server] unknown command. Try givemegun, spawnshuttle, tptoshuttle, nobarrier or barrier")
+        replyTo(pc, "[Server] unknown command. Try givemegun, tptodropship, spawndropship, spawnshuttle or nobarrier")
     end
 end
 
@@ -871,7 +906,7 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true }
 
 local function sendChat(text)
     text = cleanChat(text)
@@ -1054,7 +1089,7 @@ local function getInputBox(hud)
         if found ~= nil and found:IsValid() then return found end
     end
     local box = StaticConstructObject(StaticFindObject("/Script/UMG.EditableTextBox"), tree, FName("CoopChatInput"))
-    box:SetHintText(FText("Type a message or a command (givemegun, spawnshuttle, tptoshuttle), Enter to send"))
+    box:SetHintText(FText("Type a message or a command (givemegun, tptodropship, spawndropship), Enter to send"))
     local slot = tree.RootWidget:AddChild(box)
     slot:SetAnchors({ Minimum = { X = 0.02, Y = 0.8 }, Maximum = { X = 0.02, Y = 0.8 } })
     slot:SetAlignment({ X = 0, Y = 0.5 })
