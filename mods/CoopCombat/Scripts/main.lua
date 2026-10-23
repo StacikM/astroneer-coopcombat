@@ -877,6 +877,24 @@ local function spawnDropship(astro)
     return worked and "a dropship was spawned about 9 m in front of you" or "the dropship could not be spawned"
 end
 
+-- /freefuel on|off: the game state has the creative "free fuel" switch (SetFuelFreeCreative); vehicles and shuttles stop
+-- using fuel while it is on. Whether it also works outside creative mode is untested. Host only.
+local function setFreeFuel(on)
+    crumb("setFreeFuel")
+    local gs = FindFirstOf("AstroGameState")
+    if gs == nil or not gs:IsValid() then return "no game state found" end
+    local before
+    pcall(function() before = gs.bCreativeFreeFuelOn end)
+    local ok, err = pcall(function() gs:SetFuelFreeCreative(on) end)
+    local after
+    pcall(function() after = gs.bCreativeFreeFuelOn end)
+    say("freefuel: asked for %s, flag was %s, now %s (%s)", tostring(on), tostring(before), tostring(after), ok and "call ok" or tostring(err))
+    if not ok then return "the game refused (details in the log)" end
+    local isOn = (after == true) or (type(after) == "number" and after ~= 0)
+    if on and not isOn then return "asked for free fuel, but the game's flag did not turn on (details in the log)" end
+    return on and "free fuel is ON for every vehicle" or "free fuel is OFF"
+end
+
 -- /spawnshuttle ready: ask the game's own item-spawning function (the one the creative catalog uses) for a Small Shuttle,
 -- instead of spawning a bare chassis myself. It is called on the sender's player controller on the host. If the game
 -- refuses (for example outside creative mode) nothing appears; "spawnshuttle parts" is the fallback.
@@ -996,6 +1014,9 @@ local function runChatCommand(pc, text)
     elseif cmd == "startmission" or cmd == "completemission" then
         local id = text:match("^/%S+%s+(%S+)")
         replyTo(pc, "[Server] " .. changeMission(id, cmd == "completemission"))
+    elseif cmd == "freefuel" then
+        local arg = (text:match("^/%S+%s+(%S+)") or "on"):lower()
+        replyTo(pc, "[Server] " .. setFreeFuel(arg ~= "off"))
     elseif cmd == "enablemissions" or cmd == "disablemissions" then
         replyTo(pc, "[Server] " .. setMissionsEnabled(cmd == "enablemissions"))
     elseif cmd == "spawnsatellite" then
@@ -1086,7 +1107,7 @@ local function ignoreHardness()
 end
 
 -- commands can be typed without the slash too (typing "/" is awkward on some keyboard layouts)
-local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true, enablemissions = true, disablemissions = true, layout = true, missioninfo = true }
+local COMMAND_NAMES = { givemegun = true, probe = true, hardness = true, nobarrier = true, barrier = true, tptoshuttle = true, spawnshuttle = true, tptodropship = true, spawndropship = true, tpplanet = true, planets = true, spawnsatellite = true, missions = true, startmission = true, completemission = true, enablemissions = true, disablemissions = true, layout = true, missioninfo = true, freefuel = true }
 
 -- Missions. The game has a missions manager actor with its own list of every mission, and functions to activate or
 -- complete one. Mission ids are names (FNames, case does not matter).
